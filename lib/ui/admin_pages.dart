@@ -51,7 +51,7 @@ class AdminPage extends ConsumerWidget {
             ),
           ),
         const SizedBox(height: 8),
-        const Text('Prototype: pemeriksaan keaslian STR dilakukan manual oleh admin.', style: TextStyle(fontSize: 11, color: Colors.black54)),
+        const Text('Prototype: Pemeriksaan keaslian STR dilakukan manual oleh Admin.', style: TextStyle(fontSize: 11, color: Colors.black54)),
       ]),
     );
   }
