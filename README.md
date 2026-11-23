@@ -2,10 +2,21 @@
 
 **GroWell** adalah aplikasi pendamping tumbuh kembang **baduta (anak usia 0–24 bulan)** untuk mendukung pencegahan stunting. Aplikasi menghubungkan tiga kelompok pengguna, yaitu **orang tua**, **remaja**, dan **tenaga kesehatan (nakes)**, ditambah **admin** yang memverifikasi nakes.
 
-Versi di repositori ini adalah **prototype v0.3**:
+Versi ini adalah **prototype v0.5**:
 - Tampilan mengikuti desain Figma.
 - Dibuat dengan **Flutter (web)**.
-- Data disimpan di **Supabase (PostgreSQL)** yang berjalan di laptop sendiri lewat Docker.
+- Data disimpan di **Supabase (PostgreSQL)**, baik di laptop sendiri lewat Docker maupun **online** (Supabase cloud).
+
+**Baru di v0.5** (mengikuti desain di folder `update svg`):
+- **Kuis multiplayer bertema biru**: pilih mode **2 pemain** (duel) atau **4 pemain** (battle), lobi dengan status "Siap", kartu skor tiap pemain saat bermain, dan layar **Hasil Pertandingan** (pemenang + peringkat).
+- **Catat Pertumbuhan Anak** berupa dialog: tanggal, tinggi (40–120 cm), berat (1–30 kg), tombol Simpan aktif bila isian valid, lalu ringkasan "Data Berhasil Disimpan!" (status, perubahan dari pengukuran sebelumnya, *Ubah Data*, *Lihat Detail*).
+- Perbaikan: layar error merah setelah menekan **Selesai/Kembali** di akhir kuis.
+
+**Baru di v0.4:**
+- Tombol **+** orang tua sekarang untuk **input manual**: makanan anak (pilih menu + porsi) atau tinggi & berat badan.
+- Tenaga kesehatan bisa **mengunggah video edukasi singkat** (maks. 3 menit, 50 MB) yang tampil di tab **Reels** orang tua/remaja.
+- **Tampilan kuis baru**: hitung mundur melingkar, jawaban berwarna, streak 🔥, papan skor beranimasi, podium, dan konfeti.
+- Bisa dijalankan dengan **database online** (`demo.ps1 -Cloud`).
 
 ---
 
@@ -33,12 +44,15 @@ Versi di repositori ini adalah **prototype v0.3**:
   - Mencatat berat dan panjang/tinggi badan.
   - Menghitung z-score berdasarkan standar WHO dan menampilkan status Normal / Waspada / Kurang / Lebih.
   - Menampilkan grafik pertumbuhan dan riwayat pengukuran.
-- **Estimasi dari foto** (simulasi): mengisi pengukuran dari foto anak.
+- **Tombol + (input manual)**:
+  - *Makanan Anak*: pilih tanggal & waktu makan, ketuk menu (atau cari), atur porsi dalam gram; total kalori/protein/karbo/lemak langsung terhitung.
+  - *Tinggi & Berat Badan*: isi hasil timbang & ukur, dengan pengukuran terakhir sebagai acuan.
+- **Estimasi dari foto** (simulasi AI): foto makanan dan foto anak tetap tersedia di baris bawah lembar tombol +.
 - **Catatan makan dan gizi**:
   - Mencatat makan pagi, siang, malam, dan selingan.
   - Merangkum asupan energi dan zat gizi per hari dan per minggu.
 - **Resep MPASI** sesuai usia anak.
-- **Edukasi**: konten video pendek (reels), bisa disukai dan disimpan.
+- **Reels edukasi**: video dari nakes (diputar sungguhan) dan konten bawaan, bisa disukai dan disimpan.
 - **Konsultasi dengan nakes**:
   - Chat secara langsung (realtime).
   - Catatan konsultasi yang bisa diunduh sebagai PDF.
@@ -46,12 +60,13 @@ Versi di repositori ini adalah **prototype v0.3**:
 - **Asisten**: tanya-jawab seputar gizi dan tumbuh kembang (berbasis aturan).
 
 ### Remaja
-- Materi edukasi gizi dan pencegahan stunting.
-- **Kuis** dengan skor, lencana, dan papan peringkat mingguan.
+- Materi edukasi gizi dan pencegahan stunting, termasuk Reels video dari nakes.
+- **Kuis** dengan skor, streak, lencana, podium, dan papan peringkat mingguan.
 
 ### Tenaga kesehatan (nakes)
 - Dashboard baduta binaan per posyandu beserta status pertumbuhannya.
 - Membalas chat, menulis catatan konsultasi, dan membuat jadwal kontrol.
+- **Tab Video**: unggah video edukasi singkat (MP4/WebM/MOV, maks. 3 menit & 50 MB), pilih sasaran (orang tua/remaja), pratinjau, dan hapus.
 - Akun baru harus diverifikasi STR oleh admin sebelum bisa dipakai.
 
 ### Admin
@@ -70,8 +85,8 @@ Versi di repositori ini adalah **prototype v0.3**:
 | --- | --- |
 | Aplikasi | Flutter 3.41 (Dart 3.11), target **web/Chrome** |
 | State dan navigasi | Riverpod 3, go_router |
-| Grafik dan PDF | fl_chart, pdf |
-| Backend | Supabase: PostgreSQL 17, Auth, Realtime, Studio |
+| Grafik, PDF, video | fl_chart, pdf, video_player |
+| Backend | Supabase: PostgreSQL 17, Auth, Realtime, Storage (video), Studio |
 | Infrastruktur lokal | Supabase CLI di atas Docker Desktop (WSL2 di Windows) |
 
 ---
@@ -142,6 +157,29 @@ npx supabase stop           # matikan database (data tetap tersimpan)
 
 > Port 8093 wajib dipakai pada Mode B karena alamat ini terdaftar di konfigurasi Auth (`supabase/config.toml`).
 
+Bila memperbarui dari versi lama, `demo.ps1` otomatis menerapkan migrasi baru (`npx supabase migration up --local`) tanpa menghapus data.
+
+### Mode C — Dengan database Supabase online (tanpa Docker)
+
+Semua anggota tim memakai **database yang sama** lewat internet; cukup Flutter + Chrome.
+
+1. Pastikan file `supabase_cloud.json` ada (isi URL + *publishable key* proyek Supabase; contoh format di `supabase_cloud.example.json`).
+2. Jalankan:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File demo.ps1 -Cloud
+   # atau manual:
+   flutter run -d chrome --web-port 8093 --dart-define-from-file=supabase_cloud.json
+   ```
+
+Halaman login menampilkan alamat database yang sedang dipakai (`…supabase.co` berarti online).
+
+Proyek online GroWell: `growell` (ref `zreumtxexbpufxdfdmpw`, region Singapura), sudah berisi skema, bucket video, dan data contoh yang sama dengan lokal (akun demo, password `demo123`).
+
+Perbedaan dengan lokal:
+- **Proyek dijeda** bila 7 hari tidak dipakai. Buka dashboard Supabase → proyek `growell` → **Resume project** (± beberapa menit) sebelum demo.
+- **Lupa password** belum bisa dipakai online: paket gratis tanpa SMTP sendiri hanya mengirim email ke anggota tim dan tidak mengizinkan template email berisi kode OTP.
+- Tanggal data contoh mengikuti hari saat data dimasukkan (3 Nov 2026), jadi lama-lama terlihat "lampau".
+
 ---
 
 ## Akun demo
@@ -210,8 +248,8 @@ Untuk pameran, tekan **F11** di Chrome agar tampil layar penuh.
 
 ```bash
 flutter analyze              # analisis kode
-flutter test                 # 100 uji aplikasi (berjalan pada mode lokal, tanpa Docker)
-npx supabase test db         # 20 uji hak akses RLS di database (Supabase harus berjalan)
+flutter test                 # 112 uji aplikasi (berjalan pada mode lokal, tanpa Docker)
+npx supabase test db         # 26 uji hak akses RLS di database (Supabase lokal harus berjalan)
 ```
 
 ---
@@ -229,18 +267,20 @@ lib/
 │  ├─ providers.dart      State aplikasi (Riverpod); perubahan langsung tampil lalu ditulis ke database
 │  ├─ backend.dart        Akses Supabase: Auth, muat data, tulis data, Realtime
 │  └─ quiz_engine.dart    Jalannya kuis
-├─ ui/                    Halaman per fitur (auth, beranda, pertumbuhan, gizi, edukasi, kuis, konsultasi, nakes, admin, asisten)
+├─ ui/                    Halaman per fitur (auth, beranda, pertumbuhan, gizi, edukasi/Reels, video nakes, kuis, konsultasi, nakes, admin, asisten)
 └─ util/                  Unduh berkas (PDF) di web
 assets/                   Logo dan gambar
 supabase/
-├─ config.toml            Konfigurasi Supabase lokal
-├─ migrations/            Skema: 13 tabel, 1 view, trigger validasi, fungsi bantu, kebijakan RLS per peran, Realtime
+├─ config.toml            Konfigurasi Supabase (lokal; bagian Auth juga dipakai untuk cloud)
+├─ migrations/            Skema: 14 tabel, 1 view, trigger validasi, fungsi bantu, kebijakan RLS per peran, Realtime,
+│                         bucket Storage `edu-videos` (video nakes)
 ├─ seed.sql               Data contoh (11 akun demo, 9 anak, pengukuran, catatan makan, chat)
 ├─ templates/             Email OTP reset password (Bahasa Indonesia)
 └─ tests/database/        Uji RLS (pgTAP)
 test/                     Uji Flutter (unit + widget)
 supabase_local.json       URL + kunci publik Supabase lokal
-demo.ps1                  Skrip demo sekali jalan (Windows)
+supabase_cloud.json       URL + kunci publik Supabase online (contoh: supabase_cloud.example.json)
+demo.ps1                  Skrip demo sekali jalan (Windows): lokal, -Reset, atau -Cloud
 ```
 
 ---
@@ -255,31 +295,35 @@ demo.ps1                  Skrip demo sekali jalan (Windows)
 | Login gagal di Mode B | Pastikan Supabase berjalan (`npx supabase status`). Bila data rusak, jalankan `npx supabase db reset`. |
 | `flutter run` tidak menemukan Chrome | Jalankan `flutter doctor` dan pasang Chrome. Atau set variabel `CHROME_EXECUTABLE` ke lokasi Chrome. |
 | Error versi paket saat `flutter pub get` | Pastikan Flutter ≥ 3.41 (`flutter upgrade`). |
+| Video nakes tidak bisa diputar / durasi tidak terbaca | Gunakan MP4 (H.264). Video HEVC dari sebagian iPhone belum didukung Chrome; ubah ke H.264 dulu. |
+| Unggah video ditolak | Pastikan akun nakes sudah terverifikasi, durasi ≤ 3 menit, dan ukuran ≤ 50 MB. |
 
 ---
 
 ## Pindah ke Supabase cloud
+
+Langkah membuat/memperbarui proyek online (sekali saja, oleh pemilik akun Supabase):
 
 1. Buat proyek di https://supabase.com (region Singapura). Catat *Project ref*, URL, dan *publishable key*.
 2. Kirim skema ke cloud:
    ```bash
    npx supabase login
    npx supabase link --project-ref <ref>
-   npx supabase db push                 # skema + RLS
-   npx supabase db push --include-seed  # opsional: ikut data contoh
+   npx supabase db push --include-seed  # skema + RLS + bucket video + data contoh
+   npx supabase config push             # pengaturan Auth (tanpa konfirmasi email, template OTP)
    ```
-3. Atur template email dan SMTP di dashboard Supabase.
-4. Buat `supabase_cloud.json` berisi `SUPABASE_URL` dan `SUPABASE_PUBLISHABLE_KEY` milik proyek cloud. **Jangan commit** *secret key* / *service role key*.
-5. Jalankan:
-   ```bash
-   flutter run -d chrome --dart-define-from-file=supabase_cloud.json
-   ```
+   Perubahan skema berikutnya cukup `npx supabase db push` (hanya migrasi baru yang dikirim).
+3. Buat `supabase_cloud.json` berisi `SUPABASE_URL` dan `SUPABASE_PUBLISHABLE_KEY` milik proyek cloud. *Publishable key* memang untuk aplikasi (aman dibagikan, dilindungi RLS). **Jangan pernah commit** *secret key* / *service role key* / password database.
+4. Jalankan `demo.ps1 -Cloud`.
+
+Catatan paket gratis Supabase: database 500 MB, Storage 1 GB (± 20 video 50 MB), proyek dijeda otomatis bila tidak dipakai 7 hari (aktifkan lagi dari dashboard), dan email bawaan hanya untuk alamat anggota tim dengan batas beberapa email per jam — untuk OTP ke pengguna sungguhan, pasang SMTP sendiri.
 
 ---
 
 ## Belum termasuk
 
 - Kuis antar-perangkat masih melawan bot; skor dan lencana sudah tersimpan di database.
-- Foto belum diunggah ke Supabase Storage.
+- Foto makanan/anak belum diunggah ke Supabase Storage (video nakes sudah).
+- Video nakes belum punya thumbnail otomatis, komentar, dan jumlah suka dari semua pengguna.
 - Estimasi pertumbuhan dari foto masih simulasi, belum memakai model AI sungguhan.
 - Push notification (FCM).

@@ -15,6 +15,7 @@ import 'ui/growth_pages.dart';
 import 'ui/home_pages.dart';
 import 'ui/nutrition_pages.dart';
 import 'ui/quiz_pages.dart';
+import 'ui/video_pages.dart';
 
 const _public = {'/login', '/register', '/forgot'};
 
@@ -71,6 +72,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/child/:id', builder: (_, s) => GrowthPage(childId: s.pathParameters['id']!)),
       GoRoute(path: '/child/:id/measure', builder: (_, s) => AddMeasurementPage(childId: s.pathParameters['id']!)),
       GoRoute(path: '/child/:id/food', builder: (_, s) => FoodPhotoPage(childId: s.pathParameters['id']!)),
+      GoRoute(path: '/child/:id/food/manual', builder: (_, s) => ManualFoodPage(childId: s.pathParameters['id']!)),
       GoRoute(path: '/child/:id/nutrition', builder: (_, s) => NutritionPage(childId: s.pathParameters['id']!)),
       GoRoute(path: '/child/:id/recipes', builder: (_, s) => RecipesPage(childId: s.pathParameters['id']!)),
       GoRoute(
@@ -92,6 +94,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/quiz/leaderboard', builder: (_, _) => const LeaderboardPage()),
       GoRoute(path: '/nakes/child/:id', builder: (_, s) => GrowthPage(childId: s.pathParameters['id']!, readOnly: true)),
       GoRoute(path: '/nakes/note/:threadId', builder: (_, s) => NakesNotePage(threadId: s.pathParameters['threadId']!)),
+      GoRoute(path: '/nakes/videos/new', builder: (_, _) => const UploadVideoPage()),
+      GoRoute(path: '/video/:id', builder: (_, s) => VideoPreviewPage(videoId: s.pathParameters['id']!)),
       GoRoute(path: '/admin', builder: (_, _) => const AdminPage()),
     ],
   );

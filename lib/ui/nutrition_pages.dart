@@ -350,28 +350,262 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
 
 String _stamp(DateTime t) => '${t.year}-${two(t.month)}-${two(t.day)} ${fmtTime(t)}';
 
-/// Pilih jenis makanan dari tabel pangan.
+NutrientTotal _nutrientsOf(String foodId, double grams) {
+  final f = foodById(foodId);
+  final k = grams / 100;
+  return NutrientTotal(kcal: f.kcal * k, protein: f.protein * k, carb: f.carb * k, fat: f.fat * k, fiber: f.fiber * k);
+}
+
+// ================================================================ Catat makanan manual (tombol +)
+/// Porsi awal yang wajar untuk baduta per kelompok pangan (gram), bisa diubah.
+double defaultPortion(Food f) => switch (f.group) {
+      'Karbohidrat' => 50,
+      'Protein hewani' || 'Protein nabati' => 25,
+      'Sayur' => 20,
+      'Buah' => 30,
+      'Susu & olahan' => 100,
+      'Lemak tambahan' => 3,
+      _ => 30,
+    };
+
+const _quickFoods = ['bubur', 'nasi', 'telur', 'ayam', 'hati', 'ikan', 'tempe', 'tahu', 'wortel', 'bayam', 'pisang', 'alpukat', 'minyak'];
+
+class _ManualItem {
+  _ManualItem(this.foodId, double grams) : grams = TextEditingController(text: fmtShort(grams));
+  final String foodId;
+  final TextEditingController grams;
+  double? get value => parseNum(grams.text);
+}
+
+class ManualFoodPage extends ConsumerStatefulWidget {
+  const ManualFoodPage({super.key, required this.childId});
+  final String childId;
+  @override
+  ConsumerState<ManualFoodPage> createState() => _ManualFoodPageState();
+}
+
+class _ManualFoodPageState extends ConsumerState<ManualFoodPage> {
+  late DateTime _date = _today;
+  Meal _meal = mealForNow();
+  final List<_ManualItem> _items = [];
+
+  static DateTime get _today {
+    final n = DateTime.now();
+    return DateTime(n.year, n.month, n.day);
+  }
+
+  @override
+  void dispose() {
+    for (final i in _items) {
+      i.grams.dispose();
+    }
+    super.dispose();
+  }
+
+  void _add(String foodId) {
+    final existing = _items.where((i) => i.foodId == foodId).firstOrNull;
+    setState(() {
+      if (existing != null) {
+        existing.grams.text = fmtShort((existing.value ?? 0) + defaultPortion(foodById(foodId)));
+      } else {
+        _items.add(_ManualItem(foodId, defaultPortion(foodById(foodId))));
+      }
+    });
+  }
+
+  void _remove(_ManualItem i) {
+    setState(() => _items.remove(i));
+    i.grams.dispose();
+  }
+
+  void _step(_ManualItem i, double delta) {
+    final v = ((i.value ?? 0) + delta).clamp(1, 1000).toDouble();
+    setState(() => i.grams.text = fmtShort(v));
+  }
+
+  NutrientTotal get _total => _items.fold(const NutrientTotal(), (a, i) => a + _nutrientsOf(i.foodId, i.value ?? 0));
+
+  void _save() {
+    if (_items.isEmpty) return showError(context, ArgumentError('Belum ada makanan. Pilih minimal satu makanan.'));
+    for (final i in _items) {
+      final g = i.value;
+      if (g == null || g <= 0 || g > 1000) {
+        return showError(context, ArgumentError('Porsi ${foodById(i.foodId).name} harus diisi 1–1000 gram.'));
+      }
+    }
+    try {
+      ref.read(foodLogProvider.notifier).addAll([
+        for (final i in _items) FoodEntry(id: newId('f'), childId: widget.childId, date: _date, meal: _meal, foodId: i.foodId, grams: i.value!),
+      ]);
+      showInfo(context, 'Makanan ${_meal.label.toLowerCase()} tersimpan (${_items.length} menu).');
+      context.pushReplacement('/child/${widget.childId}/nutrition');
+    } catch (e) {
+      showError(context, e);
+    }
+  }
+
+  Widget _label(String t) => Padding(
+        padding: const EdgeInsets.only(top: 20, bottom: 10),
+        child: Text(t, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: textDark)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final child = ref.watch(childrenProvider).firstWhere((c) => c.id == widget.childId);
+    final today = _today;
+    final yesterday = today.subtract(const Duration(days: 1));
+    final t = _total;
+    return Scaffold(
+      backgroundColor: pageBg,
+      appBar: AppBar(title: const Text('Catat Makanan')),
+      body: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 40), children: [
+        if (needsExclusiveBreastfeeding(child.ageMonths))
+          ExclusiveBreastfeedingNotice(child: child)
+        else ...[
+          Text('Isi makanan yang dimakan ${child.name} (${fmtAge(child.ageDays)}).', style: const TextStyle(color: textGray, fontSize: 14.5)),
+          _label('Kapan?'),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            ChoiceChip(label: const Text('Hari ini'), selected: _date == today, onSelected: (_) => setState(() => _date = today)),
+            ChoiceChip(label: const Text('Kemarin'), selected: _date == yesterday, onSelected: (_) => setState(() => _date = yesterday)),
+            ActionChip(
+              avatar: const Icon(Icons.event, size: 18),
+              label: Text(_date == today || _date == yesterday ? 'Tanggal lain' : fmtDmy(_date)),
+              onPressed: () async {
+                final d = await showDatePicker(
+                  context: context,
+                  firstDate: child.birthDate.isAfter(today.subtract(const Duration(days: 60))) ? child.birthDate : today.subtract(const Duration(days: 60)),
+                  lastDate: today,
+                  initialDate: _date,
+                );
+                if (d != null) setState(() => _date = DateTime(d.year, d.month, d.day));
+              },
+            ),
+          ]),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final m in Meal.values) ChoiceChip(label: Text(m.label), selected: _meal == m, onSelected: (_) => setState(() => _meal = m)),
+          ]),
+          _label('Pilih menu'),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final id in _quickFoods)
+              ActionChip(
+                avatar: Icon(_items.any((i) => i.foodId == id) ? Icons.check_circle : Icons.add_circle_outline, size: 18, color: brandBlue),
+                label: Text(foodById(id).name.split(' (').first),
+                onPressed: () => _add(id),
+              ),
+            ActionChip(
+              avatar: const Icon(Icons.search, size: 18),
+              label: const Text('Cari makanan lain'),
+              onPressed: () async {
+                final id = await pickFood(context);
+                if (id != null) _add(id);
+              },
+            ),
+          ]),
+          _label('Porsi (gram)'),
+          if (_items.isEmpty)
+            const GwCard(child: Text('Belum ada menu. Ketuk menu di atas untuk menambahkan.', style: TextStyle(color: textGray)))
+          else
+            GwCard(
+              padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+              child: Column(children: [
+                for (final i in _items)
+                  Row(children: [
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(foodById(i.foodId).name, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+                        Text('${_nutrientsOf(i.foodId, i.value ?? 0).kcal.round()} kkal', style: const TextStyle(fontSize: 12.5, color: textGray)),
+                      ]),
+                    ),
+                    IconButton(tooltip: 'Kurangi', onPressed: () => _step(i, -5), icon: const Icon(Icons.remove_circle_outline)),
+                    SizedBox(
+                      width: 64,
+                      child: TextField(
+                        controller: i.grams,
+                        textAlign: TextAlign.center,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(suffixText: 'g', contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 10)),
+                        onChanged: (_) => setState(() {}),
+                      ),
+                    ),
+                    IconButton(tooltip: 'Tambah', onPressed: () => _step(i, 5), icon: const Icon(Icons.add_circle_outline)),
+                    IconButton(
+                      tooltip: 'Hapus',
+                      onPressed: () => _remove(i),
+                      icon: const Icon(Icons.delete_outline, color: Color(0xFFDC2626)),
+                    ),
+                  ]),
+              ]),
+            ),
+          _label('Total gizi'),
+          Row(children: [
+            Expanded(child: MacroTile(label: 'Kalori', value: '${t.kcal.round()} kkal', color: brandBlue, bg: const Color(0xFFEFF6FF))),
+            const SizedBox(width: 10),
+            Expanded(child: MacroTile(label: 'Protein', value: '${fmtG(t.protein)} g', color: macroColors['Protein']!.$1, bg: macroColors['Protein']!.$2)),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: MacroTile(label: 'Karbohidrat', value: '${fmtG(t.carb)} g', color: macroColors['Karbohidrat']!.$1, bg: macroColors['Karbohidrat']!.$2)),
+            const SizedBox(width: 10),
+            Expanded(child: MacroTile(label: 'Lemak', value: '${fmtG(t.fat)} g', color: macroColors['Lemak']!.$1, bg: macroColors['Lemak']!.$2)),
+          ]),
+          const SizedBox(height: 22),
+          PrimaryButton('Simpan Catatan Makan', icon: Icons.check, onPressed: _items.isEmpty ? null : _save),
+          const SizedBox(height: 8),
+          Center(
+            child: TextButton.icon(
+              onPressed: () => context.pushReplacement('/child/${widget.childId}/food'),
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: const Text('Pakai foto makanan (simulasi AI)'),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+/// Pilih jenis makanan dari tabel pangan (bisa dicari).
 Future<String?> pickFood(BuildContext context) {
+  var query = '';
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
     builder: (c) => DraggableScrollableSheet(
       expand: false,
-      initialChildSize: 0.7,
-      builder: (c, scroll) => ListView(controller: scroll, children: [
-        const Padding(padding: EdgeInsets.all(16), child: Text('Pilih makanan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-        for (final g in {for (final f in foods) f.group}) ...[
-          Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 4), child: Text(g, style: const TextStyle(color: textGray, fontWeight: FontWeight.w600))),
-          for (final f in foods.where((f) => f.group == g))
-            ListTile(
-              dense: true,
-              title: Text(f.name),
-              subtitle: Text('${f.kcal.round()} kkal • protein ${fmtNum(f.protein)} g per 100 g'),
-              onTap: () => Navigator.pop(c, f.id),
+      initialChildSize: 0.75,
+      builder: (c, scroll) => StatefulBuilder(builder: (c, setSheet) {
+        final q = query.trim().toLowerCase();
+        final list = foods.where((f) => q.isEmpty || f.name.toLowerCase().contains(q) || f.group.toLowerCase().contains(q)).toList();
+        return ListView(controller: scroll, children: [
+          const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 8), child: Text('Pilih makanan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: TextField(
+              decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.search),
+                hintText: 'Cari, mis. telur, ikan, pisang',
+                filled: true,
+                fillColor: const Color(0xFFF1F5F9),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+              ),
+              onChanged: (v) => setSheet(() => query = v),
             ),
-        ],
-      ]),
+          ),
+          if (list.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('Makanan tidak ditemukan.', style: TextStyle(color: textGray))),
+          for (final g in {for (final f in list) f.group}) ...[
+            Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 4), child: Text(g, style: const TextStyle(color: textGray, fontWeight: FontWeight.w600))),
+            for (final f in list.where((f) => f.group == g))
+              ListTile(
+                dense: true,
+                title: Text(f.name),
+                subtitle: Text('${f.kcal.round()} kkal • protein ${fmtNum(f.protein)} g per 100 g'),
+                onTap: () => Navigator.pop(c, f.id),
+              ),
+          ],
+        ]);
+      }),
     ),
   );
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:video_player/video_player.dart';
 
 import '../data/content.dart';
 import '../models.dart';
@@ -28,7 +29,8 @@ class _ReelsPageState extends ConsumerState<ReelsPage> {
   @override
   Widget build(BuildContext context) {
     final role = ref.watch(currentUserProvider)!.role;
-    final list = reels.where((r) => _forRole(r.audience, role)).toList();
+    // Video unggahan nakes (terbaru) tampil lebih dulu, lalu konten bawaan.
+    final list = [...ref.watch(eduVideosProvider), ...reels].where((r) => _forRole(r.audience, role)).toList();
     return Stack(children: [
       PageView.builder(
         scrollDirection: Axis.vertical,
@@ -64,24 +66,74 @@ class _ReelView extends ConsumerStatefulWidget {
 }
 
 class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderStateMixin {
+  // Konten bawaan: pemutaran disimulasikan dengan progres waktu.
   late final AnimationController _progress = AnimationController(vsync: this, duration: Duration(seconds: widget.reel.seconds))
     ..addListener(() => setState(() {}));
+  // Video unggahan nakes: diputar sungguhan, dimuat saat reel tampil.
+  VideoPlayerController? _video;
+  bool _videoFailed = false;
   bool _expanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _loadVideo();
+  }
 
   @override
   void didUpdateWidget(covariant _ReelView old) {
     super.didUpdateWidget(old);
-    if (!widget.active && _progress.isAnimating) _progress.stop();
+    if (widget.active) {
+      _loadVideo();
+    } else {
+      if (_progress.isAnimating) _progress.stop();
+      _video?.pause();
+    }
+  }
+
+  Future<void> _loadVideo() async {
+    final url = widget.reel.videoUrl;
+    if (url == null || _video != null) return;
+    final c = VideoPlayerController.networkUrl(Uri.parse(url));
+    _video = c;
+    c.addListener(_onVideo);
+    try {
+      await c.initialize();
+      await c.setLooping(true);
+    } catch (_) {
+      _videoFailed = true;
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _onVideo() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
     _progress.dispose();
+    _video
+      ?..removeListener(_onVideo)
+      ..dispose();
     super.dispose();
   }
 
+  bool get _playing => _video?.value.isPlaying ?? _progress.isAnimating;
+
+  double get _fraction {
+    final v = _video?.value;
+    if (v == null) return _progress.value;
+    final total = v.duration.inMilliseconds;
+    return total == 0 ? 0 : (v.position.inMilliseconds / total).clamp(0.0, 1.0);
+  }
+
   void _toggle() {
-    if (_progress.isAnimating) {
+    final v = _video;
+    if (v != null) {
+      if (!v.value.isInitialized) return;
+      v.value.isPlaying ? v.pause() : v.play();
+    } else if (_progress.isAnimating) {
       _progress.stop();
     } else {
       if (_progress.isCompleted) _progress.reset();
@@ -90,12 +142,39 @@ class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderS
     setState(() {});
   }
 
+  Widget _videoSurface(Reel r) {
+    final v = _video;
+    if (v != null && v.value.isInitialized) {
+      return ColoredBox(
+        color: Colors.black,
+        child: FittedBox(
+          fit: BoxFit.cover,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(width: v.value.size.width, height: v.value.size.height, child: VideoPlayer(v)),
+        ),
+      );
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [for (final c in r.colors) Color(c)]),
+      ),
+      child: Center(
+        child: _videoFailed
+            ? const Padding(
+                padding: EdgeInsets.all(32),
+                child: Text('Video tidak dapat diputar di perangkat ini.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white, fontSize: 16)),
+              )
+            : const CircularProgressIndicator(color: Colors.white),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final r = widget.reel;
     final liked = ref.watch(likesProvider).contains(r.id);
     final saved = ref.watch(bookmarksProvider).contains(r.id);
-    final left = (r.seconds * (1 - _progress.value)).round();
+    final left = (r.seconds * (1 - _fraction)).round();
     Widget action(IconData icon, String label, VoidCallback onTap, {Color color = Colors.white}) => Padding(
           padding: const EdgeInsets.only(bottom: 18),
           child: Column(children: [
@@ -122,7 +201,9 @@ class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderS
     return GestureDetector(
       onTap: _toggle,
       child: Stack(fit: StackFit.expand, children: [
-        if (r.image != null)
+        if (r.isVideo)
+          _videoSurface(r)
+        else if (r.image != null)
           Image.asset(r.image!, fit: BoxFit.cover)
         else
           DecoratedBox(
@@ -144,7 +225,7 @@ class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderS
             ),
           ),
         ),
-        if (!_progress.isAnimating)
+        if (!_playing && !(r.isVideo && (_videoFailed || !(_video?.value.isInitialized ?? false))))
           const Center(child: Icon(Icons.play_circle_fill, color: Colors.white70, size: 84, shadows: [Shadow(blurRadius: 10)])),
         Positioned(
           right: 10,
@@ -167,7 +248,24 @@ class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderS
           right: 78,
           bottom: 58,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(r.author, style: const TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w800, shadows: [Shadow(blurRadius: 6)])),
+            Row(children: [
+              Flexible(
+                child: Text(r.author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w800, shadows: [Shadow(blurRadius: 6)])),
+              ),
+              if (r.isVideo) ...[
+                const SizedBox(width: 6),
+                const Icon(Icons.verified, color: Color(0xFF60A5FA), size: 20),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(10)),
+                  child: const Text('Video nakes', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ]),
             const SizedBox(height: 8),
             Text(r.title, style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700, shadows: [Shadow(blurRadius: 6)])),
             const SizedBox(height: 6),
@@ -200,7 +298,7 @@ class _ReelViewState extends ConsumerState<_ReelView> with SingleTickerProviderS
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(3),
-                child: LinearProgressIndicator(value: _progress.value, minHeight: 4, backgroundColor: Colors.white30, color: Colors.white),
+                child: LinearProgressIndicator(value: _fraction, minHeight: 4, backgroundColor: Colors.white30, color: Colors.white),
               ),
             ),
             const SizedBox(width: 10),

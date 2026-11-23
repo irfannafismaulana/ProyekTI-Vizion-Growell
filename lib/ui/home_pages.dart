@@ -15,6 +15,7 @@ import 'education_pages.dart';
 import 'growth_pages.dart';
 import 'nakes_pages.dart';
 import 'quiz_pages.dart';
+import 'video_pages.dart';
 
 class _Tab {
   const _Tab(this.label, this.icon, this.activeIcon, this.page);
@@ -58,6 +59,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
         Role.health => const [
             _Tab('Dashboard', Icons.dashboard_outlined, Icons.dashboard, NakesDashboard()),
             _Tab('Konsultasi', Icons.chat_bubble_outline, Icons.chat_bubble, NakesInbox()),
+            _Tab('Video', Icons.video_library_outlined, Icons.video_library, NakesVideosPage()),
             _Tab('Profil', Icons.person_outline, Icons.person, ProfilePage()),
           ],
         Role.admin => const [
@@ -101,7 +103,7 @@ class _HomeShellState extends ConsumerState<HomeShell> {
               width: 64,
               height: 64,
               child: FloatingActionButton(
-                tooltip: 'Pilih aksi',
+                tooltip: 'Catat manual',
                 backgroundColor: brandBlue,
                 foregroundColor: Colors.white,
                 elevation: 6,
@@ -125,7 +127,8 @@ class _HomeShellState extends ConsumerState<HomeShell> {
   }
 }
 
-/// Lembar "Pilih Aksi" dari tombol + (desain "catat").
+/// Lembar "Catat Manual" dari tombol +: isi makanan anak atau hasil timbang & ukur.
+/// Pencatatan lewat foto (simulasi AI) tetap tersedia di baris bawah.
 void showActionSheet(BuildContext context, WidgetRef ref) {
   final child = ref.read(activeChildProvider);
   if (child == null) return;
@@ -165,22 +168,40 @@ void showActionSheet(BuildContext context, WidgetRef ref) {
             child: Container(width: 48, height: 5, decoration: BoxDecoration(color: const Color(0xFFD1D5DB), borderRadius: BorderRadius.circular(3))),
           ),
           const SizedBox(height: 22),
-          const Text('Pilih Aksi', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: textDark)),
+          const Text('Catat Manual', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, color: textDark)),
+          const SizedBox(height: 4),
+          Text('Isi data ${child.name} secara langsung', style: const TextStyle(color: textGray, fontSize: 14)),
           const SizedBox(height: 16),
-          option(c, Icons.photo_camera_outlined, brandBlue, const Color(0xFFDBEAFE), 'Catat Gizi Harian', 'Upload foto makanan ${child.name}',
-              () => context.push('/child/${child.id}/food')),
-          option(c, Icons.photo_camera_outlined, const Color(0xFF9333EA), const Color(0xFFF3E8FF), 'Catat Pertumbuhan Anak',
-              'Foto anak untuk pengukuran AI (simulasi)', () => showChildPhotoDialog(context, child)),
-          Center(
-            child: TextButton.icon(
-              icon: const Icon(Icons.edit_note),
-              label: const Text('Isi hasil timbang & ukur secara manual'),
-              onPressed: () {
-                Navigator.pop(c);
-                context.push('/child/${child.id}/measure');
-              },
+          option(c, Icons.restaurant_rounded, const Color(0xFFEA580C), const Color(0xFFFFEDD5), 'Makanan Anak',
+              'Pilih menu & porsi yang dimakan ${child.name}', () => context.push('/child/${child.id}/food/manual')),
+          option(c, Icons.straighten_rounded, const Color(0xFF9333EA), const Color(0xFFF3E8FF), 'Tinggi & Berat Badan',
+              'Isi hasil timbang & ukur dari posyandu', () => showMeasurementDialog(context, child)),
+          const SizedBox(height: 2),
+          const Text('Atau pakai foto (simulasi AI)', style: TextStyle(color: textGray, fontSize: 13.5)),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(c);
+                  context.push('/child/${child.id}/food');
+                },
+                icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                label: const Text('Foto makanan', overflow: TextOverflow.ellipsis),
+              ),
             ),
-          ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(c);
+                  showChildPhotoDialog(context, child);
+                },
+                icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                label: const Text('Foto anak', overflow: TextOverflow.ellipsis),
+              ),
+            ),
+          ]),
         ]),
       ),
     ),
@@ -417,7 +438,7 @@ class StatusCard extends ConsumerWidget {
         title: 'Belum ada data pertumbuhan',
         text: 'Catat berat dan panjang badan ${child.name} untuk melihat status tumbuh kembangnya.',
         button: 'Catat Pertumbuhan',
-        onPressed: () => showChildPhotoDialog(context, child),
+        onPressed: () => showMeasurementDialog(context, child),
       );
     }
     final info = statusOf(last.result);
@@ -816,8 +837,8 @@ class ProfilePage extends ConsumerWidget {
           const SectionTitle('Tentang prototype'),
           const GwCard(
             child: Text(
-              'GroWell v0.2 – tampilan mengikuti desain Figma. Mode lokal: data disimpan di memori dan kembali ke data contoh '
-              'saat halaman dimuat ulang. Z-score memakai tabel resmi WHO Child Growth Standards (dasar Permenkes 2/2020). '
+              'GroWell v0.4 – tampilan mengikuti desain Figma. Data tersimpan di Supabase bila tersambung; tanpa Supabase '
+              'data contoh disimpan di memori dan kembali semula saat halaman dimuat ulang. Z-score memakai tabel resmi WHO Child Growth Standards (dasar Permenkes 2/2020). '
               'Fitur foto AI, panggilan suara/video, dan asisten gizi masih simulasi. $draftNotice Nama pengguna dan anak fiktif.',
               style: TextStyle(height: 1.4),
             ),

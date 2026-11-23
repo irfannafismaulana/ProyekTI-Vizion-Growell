@@ -135,10 +135,11 @@ void main() {
   testWidgets('Catat pertumbuhan dari foto (simulasi) menambah pengukuran', (tester) async {
     final c = await pumpApp(tester, loginAs: 'u_rani');
     final before = c.read(childMeasurementsProvider('c_abiyu')).length;
-    await tester.tap(find.byTooltip('Pilih aksi'));
+    await tester.tap(find.byTooltip('Catat manual'));
     await tester.pumpAndSettle();
-    expect(find.text('Pilih Aksi'), findsOneWidget);
-    await tester.tap(find.text('Catat Pertumbuhan Anak'));
+    expect(find.text('Catat Manual'), findsOneWidget);
+    // Foto (simulasi AI) tetap tersedia di baris bawah lembar tombol +.
+    await tester.tap(find.text('Foto anak'));
     await tester.pumpAndSettle();
     expect(find.text('Foto Anak untuk Pemantauan'), findsOneWidget);
     await tester.tap(find.text('Coba tanpa foto (demo)'));

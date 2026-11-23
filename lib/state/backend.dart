@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/misc.dart' show ProviderListenable;
@@ -34,6 +35,11 @@ String describeBackendError(Object e) {
     return 'Gagal menyimpan ke database: ${e.message}';
   }
   if (e is AuthException) return e.message;
+  if (e is StorageException) {
+    if (e.statusCode == '413') return 'Ukuran video melebihi batas penyimpanan (maks. 50 MB).';
+    if (e.statusCode == '403') return 'Ditolak penyimpanan (hak akses): hanya nakes terverifikasi yang dapat mengunggah video.';
+    return 'Gagal mengunggah berkas: ${e.message}';
+  }
   return 'Gagal terhubung ke database: $e';
 }
 
@@ -238,6 +244,68 @@ class SupabaseBackend {
     return {for (final r in rows) r[column] as String};
   }
 
+  // ------------------------------------------------------------ Video edukasi
+  static const videoBucket = 'edu-videos';
+
+  /// Terbaru di depan; nama pengunggah diambil dari profil nakes (terlihat semua pengguna).
+  Future<List<Reel>> _videos(List<AppUser> users) async {
+    final rows = await client.from('edu_videos').select().order('created_at', ascending: false);
+    final names = {for (final u in users) u.id: u.name};
+    final storage = client.storage.from(videoBucket);
+    return [
+      for (final r in rows)
+        Reel.video(
+          id: r['id'] as String,
+          author: names[r['author_id']] ?? 'Tenaga kesehatan',
+          authorId: r['author_id'] as String,
+          title: r['title'] as String,
+          caption: r['caption'] as String,
+          audience: {for (final a in r['audience'] as List) Role.values.byName(a as String)},
+          seconds: r['duration_seconds'] as int,
+          videoUrl: storage.getPublicUrl(r['storage_path'] as String),
+          storagePath: r['storage_path'] as String,
+          createdAt: _ts(r['created_at']),
+        ),
+    ];
+  }
+
+  /// Unggah berkas ke Storage (folder milik nakes) lalu simpan metadatanya.
+  /// Bila penyimpanan metadata ditolak, berkas yang terlanjur terunggah dihapus kembali.
+  Future<({String url, String path})> uploadVideo({
+    required String id,
+    required String title,
+    required String caption,
+    required Set<Role> audience,
+    required int seconds,
+    required Uint8List bytes,
+    required String mime,
+    required String extension,
+  }) async {
+    final path = '$userId/$id.$extension';
+    final storage = client.storage.from(videoBucket);
+    await storage.uploadBinary(path, bytes, fileOptions: FileOptions(contentType: mime));
+    try {
+      await client.from('edu_videos').insert({
+        'id': id,
+        'title': title,
+        'caption': caption,
+        'audience': [for (final r in audience) r.name],
+        'storage_path': path,
+        'duration_seconds': seconds,
+        'size_bytes': bytes.length,
+      });
+    } catch (_) {
+      await storage.remove([path]).catchError((Object _) => <FileObject>[]);
+      rethrow;
+    }
+    return (url: storage.getPublicUrl(path), path: path);
+  }
+
+  Future<void> deleteVideo({required String id, String? storagePath}) async {
+    await client.from('edu_videos').delete().eq('id', id);
+    if (storagePath != null) await client.storage.from(videoBucket).remove([storagePath]);
+  }
+
   /// Muat semua data yang boleh dilihat pengguna yang sedang masuk.
   Future<void> loadAll(Reader read) async {
     final (users, cm, food, threads, appts, lb, badges, saved, liked) = await (
@@ -251,8 +319,9 @@ class SupabaseBackend {
       _ids('bookmarks', 'item_id'),
       _ids('reel_likes', 'reel_id'),
     ).wait;
-    final notes = await _notes(threads);
+    final (notes, videos) = await (_notes(threads), _videos(users)).wait;
     read(usersProvider.notifier).replaceAll(users);
+    read(eduVideosProvider.notifier).replaceAll(videos);
     read(childrenProvider.notifier).replaceAll(cm.$1);
     read(measurementsProvider.notifier).replaceAll(cm.$2);
     read(foodLogProvider.notifier).replaceAll(food);
@@ -291,6 +360,7 @@ class SupabaseBackend {
       'consult_messages': threads,
       'consult_notes': threads,
       'appointments': () async => read(appointmentsProvider.notifier).replaceAll(await _appointments()),
+      'edu_videos': () async => read(eduVideosProvider.notifier).replaceAll(await _videos(read(usersProvider))),
     };
     reloaders['measurements'] = reloaders['children']!;
 
@@ -334,6 +404,8 @@ class SupabaseBackend {
         'height_cm': m.heightCm,
         'source': source,
       });
+
+  Future<void> deleteMeasurement(String id) => client.from('measurements').delete().eq('id', id);
 
   Future<void> insertFood(List<FoodEntry> entries) => client.from('food_entries').insert([
         for (final e in entries)

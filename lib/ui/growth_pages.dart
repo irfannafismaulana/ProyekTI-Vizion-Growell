@@ -418,7 +418,7 @@ class _GrowthPageState extends ConsumerState<GrowthPage> {
           : FloatingActionButton.extended(
               backgroundColor: brandBlue,
               foregroundColor: Colors.white,
-              onPressed: () => context.push('/child/${child.id}/measure'),
+              onPressed: () => showMeasurementDialog(context, child),
               icon: const Icon(Icons.add),
               label: const Text('Tambah data'),
             ),
@@ -616,7 +616,245 @@ class GrowthChart extends StatelessWidget {
 }
 
 
-// ---------------------------------------------------------------- Input manual hasil timbang & ukur
+// ---------------------------------------------------------------- Dialog "Catat Pertumbuhan Anak" (desain update v0.5)
+/// Rentang input yang diterima (sama dengan validasi aplikasi & database untuk baduta).
+const heightRange = (40.0, 120.0);
+const weightRange = (1.0, 30.0);
+
+/// Input manual tinggi & berat dari tombol +: form → ringkasan "Data Berhasil Disimpan!".
+void showMeasurementDialog(BuildContext context, Child child) {
+  showBlueDialog<void>(context, title: 'Catat Pertumbuhan Anak', builder: (c) => _MeasurementFlow(child: child, outer: context));
+}
+
+class _MeasurementFlow extends ConsumerStatefulWidget {
+  const _MeasurementFlow({required this.child, required this.outer});
+  final Child child;
+
+  /// Context halaman di belakang dialog (untuk navigasi "Lihat Detail").
+  final BuildContext outer;
+  @override
+  ConsumerState<_MeasurementFlow> createState() => _MeasurementFlowState();
+}
+
+class _MeasurementFlowState extends ConsumerState<_MeasurementFlow> {
+  DateTime _date = DateTime.now();
+  final _h = TextEditingController();
+  final _w = TextEditingController();
+  Measurement? _saved;
+  String? _error;
+
+  @override
+  void dispose() {
+    _h.dispose();
+    _w.dispose();
+    super.dispose();
+  }
+
+  double? _valid(TextEditingController c, (double, double) range) {
+    final v = parseNum(c.text);
+    return v != null && v >= range.$1 && v <= range.$2 ? v : null;
+  }
+
+  void _save() {
+    final h = _valid(_h, heightRange), w = _valid(_w, weightRange);
+    if (h == null || w == null) return;
+    final notifier = ref.read(measurementsProvider.notifier);
+    try {
+      final m = notifier.add(child: widget.child, date: _date, weightKg: w, heightCm: h);
+      setState(() {
+        _saved = m;
+        _error = null;
+      });
+    } on RangeError {
+      setState(() => _error = 'Umur anak pada tanggal ukur di luar cakupan pemantauan 0–24 bulan.');
+    } on ArgumentError catch (e) {
+      setState(() => _error = '${e.message}');
+    }
+  }
+
+  /// "Ubah Data": hapus hasil tadi lalu kembali ke form dengan isian yang sama.
+  void _edit() {
+    final m = _saved!;
+    ref.read(measurementsProvider.notifier).remove(m.id);
+    setState(() {
+      _saved = null;
+      _date = m.date;
+      _h.text = fmtNum(m.heightCm);
+      _w.text = fmtNum(m.weightKg);
+    });
+  }
+
+  InputDecoration _dec(String hint, String suffix, String helper, String? error) => InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFF9CA3AF)),
+        suffixIcon: suffix.isEmpty ? null : Padding(padding: const EdgeInsets.only(right: 14), child: Text(suffix, style: const TextStyle(color: textGray, fontWeight: FontWeight.w600))),
+        suffixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+        helperText: helper,
+        helperStyle: const TextStyle(fontSize: 12, color: textGray),
+        errorText: error,
+        isDense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFD1D5DB))),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: brandBlue, width: 2)),
+      );
+
+  Widget _label(String t) =>
+      Padding(padding: const EdgeInsets.only(top: 14, bottom: 6), child: Text(t, style: const TextStyle(fontWeight: FontWeight.w700, color: textDark)));
+
+  String _helper(TextEditingController c, (double, double) r, String unit) => c.text.trim().isEmpty
+      ? 'Isi dengan angka, boleh memakai satu angka desimal'
+      : 'Rentang yang dapat diisi: ${fmtShort(r.$1)} – ${fmtShort(r.$2)} $unit';
+
+  String? _errorFor(TextEditingController c, (double, double) r, String unit) {
+    if (c.text.trim().isEmpty) return null;
+    final v = parseNum(c.text);
+    if (v == null) return 'Isi dengan angka, contoh ${unit == 'cm' ? '72,5' : '8,5'}';
+    if (v < r.$1 || v > r.$2) return 'Di luar rentang ${fmtShort(r.$1)} – ${fmtShort(r.$2)} $unit';
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) => _saved == null ? _form(context) : _summary(context, _saved!);
+
+  Widget _form(BuildContext context) {
+    final ready = _valid(_h, heightRange) != null && _valid(_w, weightRange) != null;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text.rich(
+          TextSpan(children: [
+            const TextSpan(text: 'Masukkan hasil pengukuran terbaru\n'),
+            TextSpan(text: '${widget.child.name} secara manual', style: const TextStyle(fontWeight: FontWeight.w700)),
+          ]),
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFF374151), height: 1.4),
+        ),
+        _label('Tanggal Pengukuran'),
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            final d = await showDatePicker(context: context, firstDate: widget.child.birthDate, lastDate: DateTime.now(), initialDate: _date);
+            if (d != null) setState(() => _date = d);
+          },
+          child: InputDecorator(
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+              suffixIcon: const Icon(Icons.calendar_today_outlined, size: 20),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFFD1D5DB))),
+            ),
+            child: Text(fmtDmy(_date)),
+          ),
+        ),
+        _label('Tinggi / Panjang Badan'),
+        TextField(
+          controller: _h,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onChanged: (_) => setState(() {}),
+          decoration: _dec('Contoh: 72,5', 'cm', _helper(_h, heightRange, 'cm'), _errorFor(_h, heightRange, 'cm')),
+        ),
+        _label('Berat Badan'),
+        TextField(
+          controller: _w,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          onChanged: (_) => setState(() {}),
+          decoration: _dec('Contoh: 8,5', 'kg', _helper(_w, weightRange, 'kg'), _errorFor(_w, weightRange, 'kg')),
+        ),
+        const SizedBox(height: 14),
+        const TipsBox(title: 'Tips Mengukur Manual:', items: [
+          'Timbang tanpa sepatu dan pakaian tebal',
+          'Di bawah 2 tahun: ukur panjang badan sambil berbaring',
+          '2 tahun ke atas: ukur tinggi badan sambil berdiri tegak',
+          'Gunakan alat ukur yang sama setiap kali',
+        ]),
+        if (_error != null) ...[
+          const SizedBox(height: 10),
+          Text(_error!, style: const TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w600)),
+        ],
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: SecondaryButton('Batal', onPressed: () => Navigator.pop(context))),
+          const SizedBox(width: 12),
+          Expanded(child: PrimaryButton('Simpan Data', onPressed: ready ? _save : null)),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _summary(BuildContext context, Measurement m) {
+    final history = ref.watch(childMeasurementsProvider(widget.child.id));
+    final previous = history.where((x) => x.id != m.id && !x.date.isAfter(m.date)).lastOrNull;
+    final status = statusOf(m.result).status;
+    String signed(double v, String unit) => '${v >= 0 ? '+' : '−'}${fmtNum(v.abs())} $unit';
+    Widget valueCard(String label, String value, IconData icon, Color fg, Color bg) => Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
+          child: Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(label, style: const TextStyle(fontSize: 12.5, color: textGray)),
+                const SizedBox(height: 2),
+                Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: fg)),
+              ]),
+            ),
+            CircleAvatar(radius: 20, backgroundColor: Colors.white.withValues(alpha: 0.7), child: Icon(icon, color: fg)),
+          ]),
+        );
+    Widget infoRow(String label, Widget trailing) => Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFE5E7EB))),
+          child: Row(children: [Expanded(child: Text(label, style: const TextStyle(color: Color(0xFF374151)))), trailing]),
+        );
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Center(
+          child: CircleAvatar(radius: 28, backgroundColor: Color(0xFFDCFCE7), child: Icon(Icons.check_rounded, color: Color(0xFF16A34A), size: 34)),
+        ),
+        const SizedBox(height: 10),
+        const Text('Data Berhasil Disimpan!', textAlign: TextAlign.center, style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textDark)),
+        Text('Pengukuran ${widget.child.name} pada ${fmtDmy(m.date)}', textAlign: TextAlign.center, style: const TextStyle(color: textGray)),
+        const SizedBox(height: 16),
+        valueCard('Tinggi Badan', '${fmtNum(m.heightCm)} cm', Icons.arrow_upward_rounded, brandBlue, const Color(0xFFEFF6FF)),
+        valueCard('Berat Badan', '${fmtNum(m.weightKg)} kg', Icons.monitor_weight_outlined, const Color(0xFF16A34A), const Color(0xFFF0FDF4)),
+        infoRow('Status pertumbuhan', StatusPill(status)),
+        infoRow(
+          previous == null ? 'Perubahan' : 'Perubahan dari ${fmtDate(previous.date)}',
+          Text(
+            previous == null ? 'Pengukuran pertama' : '${signed(m.weightKg - previous.weightKg, 'kg')}  ${signed(m.heightCm - previous.heightCm, 'cm')}',
+            style: TextStyle(
+              color: previous != null && (m.weightKg < previous.weightKg || m.heightCm < previous.heightCm) ? const Color(0xFFD97706) : const Color(0xFF16A34A),
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: const Color(0xFFFFFBEB), borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFFDE68A))),
+          child: const Text('Catatan: Data ini diinput manual oleh orang tua. Dokter dapat mengonfirmasinya saat jadwal kontrol.',
+              style: TextStyle(color: Color(0xFF92400E), fontSize: 13, height: 1.35)),
+        ),
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: SecondaryButton('Ubah Data', onPressed: _edit)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: PrimaryButton('Lihat Detail', onPressed: () {
+              Navigator.pop(context);
+              widget.outer.push('/child/${widget.child.id}');
+            }),
+          ),
+        ]),
+      ]),
+    );
+  }
+}
+
+// ---------------------------------------------------------------- Input manual hasil timbang & ukur (halaman, dari notifikasi)
 class AddMeasurementPage extends ConsumerStatefulWidget {
   const AddMeasurementPage({super.key, required this.childId});
   final String childId;
@@ -682,11 +920,27 @@ class _AddMeasurementPageState extends ConsumerState<AddMeasurementPage> {
   @override
   Widget build(BuildContext context) {
     final child = ref.watch(childrenProvider).firstWhere((c) => c.id == widget.childId);
+    final last = ref.watch(childMeasurementsProvider(child.id)).lastOrNull;
     return Scaffold(
       backgroundColor: pageBg,
       appBar: AppBar(title: const Text('Catat Pertumbuhan')),
       body: ListView(padding: const EdgeInsets.all(20), children: [
         Text('Isi hasil timbang dan ukur ${child.name} dari posyandu/puskesmas.', style: const TextStyle(color: textGray)),
+        if (last != null) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: tipsBg, borderRadius: BorderRadius.circular(14)),
+            child: Row(children: [
+              const Icon(Icons.history, color: tipsText),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('Terakhir (${fmtDate(last.date)}): ${fmtNum(last.heightCm)} cm • ${fmtNum(last.weightKg)} kg',
+                    style: const TextStyle(color: tipsText, fontWeight: FontWeight.w600)),
+              ),
+            ]),
+          ),
+        ],
         const SizedBox(height: 16),
         OutlinedButton.icon(
           style: OutlinedButton.styleFrom(
@@ -715,7 +969,15 @@ class _AddMeasurementPageState extends ConsumerState<AddMeasurementPage> {
         ),
         const SizedBox(height: 24),
         PrimaryButton('Simpan Data', onPressed: _save),
-        const SizedBox(height: 12),
+        const SizedBox(height: 4),
+        Center(
+          child: TextButton.icon(
+            onPressed: () => showChildPhotoDialog(context, child),
+            icon: const Icon(Icons.photo_camera_outlined),
+            label: const Text('Pakai foto anak (simulasi AI)'),
+          ),
+        ),
+        const SizedBox(height: 4),
         const Text('Z-score dihitung dengan tabel WHO Child Growth Standards (Permenkes 2/2020).',
             style: TextStyle(fontSize: 12, color: textGray)),
       ]),

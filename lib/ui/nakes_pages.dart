@@ -85,6 +85,7 @@ class _NakesDashboardState extends ConsumerState<NakesDashboard> {
       ),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: _posyandu,
           decoration: const InputDecoration(labelText: 'Filter wilayah / posyandu'),
           items: [

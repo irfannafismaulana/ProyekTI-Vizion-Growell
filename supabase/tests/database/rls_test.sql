@@ -2,7 +2,7 @@
 -- Memastikan aturan SRS ditegakkan di server, bukan hanya di aplikasi.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(26);
 
 -- id akun demo (lihat supabase/seed.sql)
 \set rani   '''10000000-0000-4000-8000-000000000001'''
@@ -62,6 +62,26 @@ select set_config('request.jwt.claims', json_build_object('sub', :admin, 'role',
 select is((select verified from public.profiles where id = :candra), false, 'update verifikasi oleh orang tua tidak berpengaruh');
 update public.profiles set verified = true where id = '10000000-0000-4000-8000-000000000016';
 select is((select verified from public.profiles where id = :candra), true, 'admin dapat memverifikasi STR');
+
+-- ------------------------------------------------------------ Video edukasi (v0.4)
+select set_config('request.jwt.claims', json_build_object('sub', :sarah, 'role', 'authenticated')::text, true);
+select lives_ok($$ insert into public.edu_videos (id, title, audience, storage_path, duration_seconds, size_bytes)
+                   values ('v_uji', 'MPASI hati ayam', '{parent,teen}', '10000000-0000-4000-8000-000000000014/v_uji.mp4', 45, 1000) $$,
+                'nakes terverifikasi boleh mengunggah video edukasi');
+select throws_ok($$ insert into public.edu_videos (id, title, storage_path, duration_seconds, size_bytes)
+                   values ('v_lain', 'Folder nakes lain', '10000000-0000-4000-8000-000000000011/v_lain.mp4', 45, 1000) $$,
+                 '42501', null, 'nakes tidak bisa menyimpan video di folder nakes lain');
+select throws_ok($$ insert into public.edu_videos (id, title, storage_path, duration_seconds, size_bytes)
+                   values ('v_panjang', 'Video panjang', '10000000-0000-4000-8000-000000000014/v_panjang.mp4', 600, 1000) $$,
+                 '23514', null, 'video lebih dari 3 menit ditolak');
+
+select set_config('request.jwt.claims', json_build_object('sub', :dina, 'role', 'authenticated')::text, true);
+select is((select count(*)::int from public.edu_videos where id = 'v_uji'), 1, 'remaja dapat menonton video nakes');
+select throws_ok($$ insert into public.edu_videos (id, title, storage_path, duration_seconds, size_bytes)
+                   values ('v_dina', 'Video remaja', '10000000-0000-4000-8000-000000000004/v_dina.mp4', 30, 1000) $$,
+                 '42501', null, 'remaja tidak bisa mengunggah video');
+delete from public.edu_videos where id = 'v_uji';
+select is((select count(*)::int from public.edu_videos where id = 'v_uji'), 1, 'remaja tidak bisa menghapus video nakes');
 
 -- ------------------------------------------------------------ Pengguna anonim
 reset role;

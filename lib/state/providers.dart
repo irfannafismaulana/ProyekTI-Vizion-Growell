@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' show AuthException;
@@ -8,7 +9,7 @@ import '../data/seed.dart';
 import '../models.dart';
 import 'backend.dart';
 
-export 'backend.dart' show backendProvider, syncErrorProvider, demoEmails;
+export 'backend.dart' show backendProvider, syncErrorProvider, demoEmails, describeBackendError;
 
 /// Dua mode data:
 /// - lokal (tanpa konfigurasi Supabase, dipakai uji otomatis): data contoh di memori;
@@ -346,6 +347,13 @@ class MeasurementsNotifier extends Notifier<List<Measurement>> {
     syncToBackend(ref, (b) => b.insertMeasurement(m, source: source), rollback: () => state = state.where((x) => x.id != m.id).toList());
     return m;
   }
+
+  /// Hapus pengukuran (mis. "Ubah Data" setelah salah ketik); RLS hanya mengizinkan orang tua pemilik anak.
+  void remove(String id) {
+    final before = state;
+    state = state.where((m) => m.id != id).toList();
+    syncToBackend(ref, (b) => b.deleteMeasurement(id), rollback: () => state = before);
+  }
 }
 
 final measurementsProvider = NotifierProvider<MeasurementsNotifier, List<Measurement>>(MeasurementsNotifier.new);
@@ -681,6 +689,89 @@ class LikesNotifier extends _FlagSetNotifier {
 
 final likesProvider = NotifierProvider<LikesNotifier, Set<String>>(LikesNotifier.new);
 
+/// Video edukasi singkat unggahan tenaga kesehatan (terbaru di depan).
+/// Mode lokal: video diputar dari URL sementara browser dan hilang saat halaman dimuat ulang.
+class EduVideosNotifier extends Notifier<List<Reel>> {
+  static const maxBytes = 50 * 1024 * 1024;
+  static const maxSeconds = 180;
+
+  @override
+  List<Reel> build() => [];
+
+  void replaceAll(List<Reel> videos) => state = videos;
+
+  /// Mengembalikan pesan kesalahan, atau null bila video boleh diunggah.
+  static String? validate({required String title, required Set<Role> audience, required int sizeBytes, required int seconds}) {
+    if (title.trim().length < 3) return 'Judul video minimal 3 karakter.';
+    if (title.trim().length > 120) return 'Judul video maksimal 120 karakter.';
+    if (audience.isEmpty || !audience.every((r) => r == Role.parent || r == Role.teen)) {
+      return 'Pilih sasaran penonton: orang tua dan/atau remaja.';
+    }
+    if (sizeBytes > maxBytes) return 'Ukuran video maksimal 50 MB. Kompres atau potong video terlebih dahulu.';
+    if (seconds < 1) return 'Durasi video tidak terbaca. Gunakan format MP4 (H.264).';
+    if (seconds > maxSeconds) return 'Video singkat maksimal 3 menit (durasi video ini ${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}).';
+    return null;
+  }
+
+  Future<Reel> upload({
+    required AppUser actor,
+    required String title,
+    required String caption,
+    required Set<Role> audience,
+    required Uint8List bytes,
+    required String mime,
+    required String extension,
+    required int seconds,
+    required String localUrl,
+  }) async {
+    if (!actor.isVerifiedHealth) throw AccessDenied('Hanya tenaga kesehatan terverifikasi yang dapat mengunggah video.');
+    final err = validate(title: title, audience: audience, sizeBytes: bytes.length, seconds: seconds);
+    if (err != null) throw ArgumentError(err);
+    final id = newId('v');
+    var url = localUrl;
+    String? path;
+    final b = ref.read(backendProvider);
+    if (b != null) {
+      final uploaded = await b.uploadVideo(
+        id: id,
+        title: title.trim(),
+        caption: caption.trim(),
+        audience: audience,
+        seconds: seconds,
+        bytes: bytes,
+        mime: mime,
+        extension: extension,
+      );
+      (url, path) = (uploaded.url, uploaded.path);
+    }
+    final reel = Reel.video(
+      id: id,
+      author: actor.name,
+      authorId: actor.id,
+      title: title.trim(),
+      caption: caption.trim(),
+      audience: audience,
+      seconds: seconds,
+      videoUrl: url,
+      storagePath: path,
+      createdAt: DateTime.now(),
+    );
+    state = [reel, ...state.where((x) => x.id != id)];
+    return reel;
+  }
+
+  /// Pengunggah atau admin boleh menghapus video.
+  void remove({required AppUser actor, required String id}) {
+    final v = state.firstWhere((x) => x.id == id);
+    if (v.authorId != actor.id && actor.role != Role.admin) throw AccessDenied('Hanya pengunggah atau admin yang dapat menghapus video ini.');
+    final before = state;
+    state = state.where((x) => x.id != id).toList();
+    syncToBackend(ref, (b) => b.deleteVideo(id: v.id, storagePath: v.storagePath), rollback: () => state = before);
+  }
+}
+
+final eduVideosProvider = NotifierProvider<EduVideosNotifier, List<Reel>>(EduVideosNotifier.new);
+
 /// Data milik pengguna yang dikosongkan saat keluar (mode database).
 void _resetUserData(Ref ref) {
   ref
@@ -695,5 +786,6 @@ void _resetUserData(Ref ref) {
     ..invalidate(badgesProvider)
     ..invalidate(bookmarksProvider)
     ..invalidate(likesProvider)
+    ..invalidate(eduVideosProvider)
     ..invalidate(selectedChildProvider);
 }

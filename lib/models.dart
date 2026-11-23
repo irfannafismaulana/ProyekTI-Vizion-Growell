@@ -337,7 +337,42 @@ class Reel {
     required this.colors,
     this.image,
     this.articleId,
+    this.videoUrl,
+    this.authorId,
+    this.storagePath,
+    this.createdAt,
   });
+
+  /// Video unggahan tenaga kesehatan (v0.4): diputar dari [videoUrl].
+  factory Reel.video({
+    required String id,
+    required String author,
+    required String authorId,
+    required String title,
+    required String caption,
+    required Set<Role> audience,
+    required int seconds,
+    required String videoUrl,
+    required DateTime createdAt,
+    String? storagePath,
+  }) =>
+      Reel(
+        id: id,
+        author: author,
+        title: title,
+        caption: caption,
+        headline: title,
+        subline: '',
+        seconds: seconds,
+        likes: 0,
+        comments: 0,
+        audience: audience,
+        colors: const [0xFF1E3A8A, 0xFF2E7EFE],
+        videoUrl: videoUrl,
+        authorId: authorId,
+        storagePath: storagePath,
+        createdAt: createdAt,
+      );
 
   final String id;
   final String author;
@@ -354,4 +389,11 @@ class Reel {
 
   /// Artikel lanjutan untuk tombol "Selengkapnya".
   final String? articleId;
+
+  final String? videoUrl;
+  final String? authorId;
+  final String? storagePath;
+  final DateTime? createdAt;
+
+  bool get isVideo => videoUrl != null;
 }

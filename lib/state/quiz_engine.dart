@@ -60,18 +60,23 @@ class QuizSession {
     required this.hostId,
     required this.meId,
     required this.settings,
+    this.capacity = 4,
     required this.players,
     this.questions = const [],
     this.index = 0,
     this.phase = QuizPhase.lobby,
     this.secondsLeft = 0,
     this.message,
+    this.myHistory = const [],
   });
 
   final String code;
   final String hostId;
   final String meId;
   final QuizSettings settings;
+
+  /// Mode ruang: 2 pemain (duel) atau 4 pemain (battle).
+  final int capacity;
   final List<Player> players;
   final List<Question> questions;
   final int index;
@@ -79,7 +84,21 @@ class QuizSession {
   final double secondsLeft;
   final String? message;
 
+  /// Benar/salah jawaban saya per soal yang sudah dinilai (untuk streak & pembahasan).
+  final List<bool> myHistory;
+
+  /// Jumlah jawaban benar berturut-turut sampai soal terakhir yang dinilai.
+  int get streak {
+    var n = 0;
+    for (final ok in myHistory.reversed) {
+      if (!ok) break;
+      n++;
+    }
+    return n;
+  }
+
   bool get iAmHost => hostId == meId;
+  bool get isFull => players.length >= capacity;
   Player get me => players.firstWhere((p) => p.id == meId);
   Question? get current => index < questions.length ? questions[index] : null;
   List<Player> get ranking => [...players]..sort((a, b) => b.score.compareTo(a.score));
@@ -91,18 +110,21 @@ class QuizSession {
     QuizPhase? phase,
     double? secondsLeft,
     String? message,
+    List<bool>? myHistory,
   }) =>
       QuizSession(
         code: code,
         hostId: hostId,
         meId: meId,
         settings: settings,
+        capacity: capacity,
         players: players ?? this.players,
         questions: questions ?? this.questions,
         index: index ?? this.index,
         phase: phase ?? this.phase,
         secondsLeft: secondsLeft ?? this.secondsLeft,
         message: message,
+        myHistory: myHistory ?? this.myHistory,
       );
 }
 
@@ -137,9 +159,11 @@ class QuizEngine extends Notifier<QuizSession?> {
       Player(id: 'bot_${name.toLowerCase()}', name: 'Bot $name', isBot: true, profile: profile);
 
   // ------------------------------------------------------------ room
-  String? createRoom({required AppUser me, required QuizSettings settings, QuizCategory? myProfile}) {
+  /// [capacity]: mode 2 pemain (duel) atau 4 pemain (battle).
+  String? createRoom({required AppUser me, required QuizSettings settings, QuizCategory? myProfile, int capacity = 4}) {
     final err = settings.validate();
     if (err != null) return err;
+    if (capacity != 2 && capacity != 4) return 'Mode permainan harus 2 atau 4 pemain.';
     if (me.role == Role.health || me.role == Role.admin) return 'Kuis hanya untuk peran orang tua dan remaja.';
     _cancelAll();
     state = QuizSession(
@@ -147,14 +171,15 @@ class QuizEngine extends Notifier<QuizSession?> {
       hostId: me.id,
       meId: me.id,
       settings: settings,
+      capacity: capacity,
       players: [Player(id: me.id, name: me.name, isBot: false, profile: myProfile ?? profileOf(me.role))],
     );
-    // Simulasi pemain lain bergabung ke lobi.
-    final bots = [_bot('Rina', QuizCategory.remaja), _bot('Adi', QuizCategory.orangTua), _bot('Maya', QuizCategory.umum)];
+    // Simulasi pemain lain bergabung ke lobi sampai ruang penuh.
+    final bots = [_bot('Rina', QuizCategory.remaja), _bot('Adi', QuizCategory.orangTua), _bot('Maya', QuizCategory.umum)].take(capacity - 1).toList();
     for (var i = 0; i < bots.length; i++) {
       _after(Duration(milliseconds: 1200 * (i + 1)), () {
         final s = state;
-        if (s == null || s.phase != QuizPhase.lobby || s.players.length >= 30) return;
+        if (s == null || s.phase != QuizPhase.lobby || s.isFull) return;
         state = s.copyWith(players: [...s.players, bots[i]]);
       });
     }
@@ -175,8 +200,9 @@ class QuizEngine extends Notifier<QuizSession?> {
       hostId: host.id,
       meId: me.id,
       settings: const QuizSettings(difficulty: Difficulty.mudah, category: QuizCategory.campuran, questionCount: 5, secondsPerQuestion: 15),
-      players: [host, _bot('Adi', QuizCategory.orangTua), Player(id: me.id, name: me.name, isBot: false, profile: myProfile ?? profileOf(me.role))],
-      message: 'Menunggu room master memulai kuis…',
+      capacity: 2,
+      players: [host, Player(id: me.id, name: me.name, isBot: false, profile: myProfile ?? profileOf(me.role))],
+      message: 'Menunggu host memulai kuis…',
     );
     _after(const Duration(seconds: 4), start);
     return null;
@@ -269,7 +295,7 @@ class QuizEngine extends Notifier<QuizSession?> {
           );
         }(),
     ];
-    state = s.copyWith(phase: QuizPhase.reveal, players: players, secondsLeft: 0);
+    state = s.copyWith(phase: QuizPhase.reveal, players: players, secondsLeft: 0, myHistory: [...s.myHistory, s.me.answer == q.answer]);
     _after(const Duration(milliseconds: 3500), _next);
   }
 

@@ -409,9 +409,11 @@ class _ForgotPasswordPageState extends ConsumerState<ForgotPasswordPage> {
         if (err != null) return setState(() => _error = err);
         showInfo(
           context,
-          remote
-              ? 'Kode OTP dikirim ke email. Database lokal: buka Mailpit http://127.0.0.1:54324'
-              : 'Kode OTP terkirim ke email (mode lokal: ${SessionNotifier.demoOtp})',
+          !remote
+              ? 'Kode OTP terkirim ke email (mode lokal: ${SessionNotifier.demoOtp})'
+              : RegExp(r'127\.0\.0\.1|localhost').hasMatch(ref.read(backendProvider)!.url)
+                  ? 'Kode OTP dikirim ke email. Database lokal: buka Mailpit http://127.0.0.1:54324'
+                  : 'Kode OTP dikirim ke email. Periksa kotak masuk (atau folder spam).',
         );
         setState(() => _step = 1);
       case 1:
