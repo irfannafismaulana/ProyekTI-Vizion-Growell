@@ -216,9 +216,10 @@ Tanpa kunci, asisten & foto makanan tetap berjalan dengan jawaban berbasis atura
 ### Build Android (APK)
 Butuh Android SDK + JDK 17 (`flutter doctor` baris *Android toolchain* bercentang).
 ```powershell
-flutter build apk --release --dart-define-from-file=supabase_cloud.json --dart-define=GROWELL_DEMO=false
-# hasil: build\app\outputs\flutter-apk\app-release.apk
+powershell -ExecutionPolicy Bypass -File build_apk.ps1            # hasil: dist\GroWell-v0.6.0-demo.apk (ada tombol akun demo)
+powershell -ExecutionPolicy Bypass -File build_apk.ps1 -Release   # hasil: dist\GroWell-v0.6.0.apk (tanpa fitur demo)
 ```
+Nama aplikasi di HP: **GroWell**, ikon dari logo GroWell (`assets/icon/`). Untuk mengganti ikon: ubah `assets/logo_icon.png`, lalu `dart run tool/make_icon.dart` dan `dart run flutter_launcher_icons`.
 APK memakai database **online** (HP tidak bisa menjangkau `127.0.0.1` laptop). Tambahkan `--dart-define-from-file=firebase_config.json` untuk push notification. Build ini masih ditandatangani kunci *debug*; untuk Play Store buat *keystore* rilis sendiri.
 
 ---

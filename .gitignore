@@ -56,3 +56,6 @@ supabase/.cloud-secrets
 supabase/functions/.env
 firebase_config.json
 web/firebase-config.js
+
+# Hasil build APK (build_apk.ps1)
+dist/
