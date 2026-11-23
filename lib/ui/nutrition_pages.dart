@@ -9,13 +9,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../config.dart';
 import '../core/nutrition.dart';
 import '../core/status.dart';
 import '../data/foods.dart';
 import '../data/recipes.dart';
 import '../models.dart';
+import '../state/ai.dart';
 import '../state/providers.dart';
 import '../util/download.dart';
+import '../util/files.dart';
 import 'common.dart';
 
 /// Gram ditampilkan bulat bila ≥ 10, satu desimal bila kecil.
@@ -72,7 +75,15 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
 
   ImageProvider? get _image => _photo != null ? MemoryImage(_photo!) : (_sample ? const AssetImage('assets/food_sample.jpg') : null);
 
+  String _mime = 'image/jpeg';
+
+  /// true = hasil dari AI sungguhan (PRD F7); false = simulasi (mode lokal / foto contoh / AI gagal).
+  bool _fromAi = false;
+  String? _aiNote;
+  bool _saving = false;
+
   Future<void> _choose() async {
+    final demo = ref.read(showDemoProvider);
     final source = await showModalBottomSheet<String>(
       context: context,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
@@ -81,7 +92,8 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
           const SizedBox(height: 8),
           ListTile(leading: const Icon(Icons.photo_camera_outlined), title: const Text('Kamera'), onTap: () => Navigator.pop(c, 'camera')),
           ListTile(leading: const Icon(Icons.photo_library_outlined), title: const Text('Galeri'), onTap: () => Navigator.pop(c, 'gallery')),
-          ListTile(leading: const Icon(Icons.image_outlined), title: const Text('Pakai foto contoh (demo)'), onTap: () => Navigator.pop(c, 'sample')),
+          if (demo)
+            ListTile(leading: const Icon(Icons.image_outlined), title: const Text('Pakai foto contoh (demo)'), onTap: () => Navigator.pop(c, 'sample')),
         ]),
       ),
     );
@@ -91,9 +103,16 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
       _sample = true;
     } else {
       try {
-        final x = await ImagePicker().pickImage(source: source == 'camera' ? ImageSource.camera : ImageSource.gallery, maxWidth: 1280);
+        // ≤ 1024 px & kualitas 80: cukup untuk AI dan hemat kuota penyimpanan.
+        final x = await ImagePicker().pickImage(
+          source: source == 'camera' ? ImageSource.camera : ImageSource.gallery,
+          maxWidth: 1024,
+          maxHeight: 1024,
+          imageQuality: 80,
+        );
         if (x == null) return;
         _photo = await x.readAsBytes();
+        _mime = x.mimeType ?? mimeOfImage(x.name) ?? 'image/jpeg';
         _sample = false;
       } catch (_) {
         if (mounted) showError(context, ArgumentError('Kamera/galeri tidak dapat dibuka di perangkat ini.'));
@@ -103,10 +122,32 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
     await _analyze();
   }
 
-  /// SIMULASI deteksi: prototype belum memakai model AI pengenal makanan.
   Future<void> _analyze() async {
-    setState(() => _step = _FoodStep.analyzing);
-    await Future<void>.delayed(const Duration(milliseconds: 1800));
+    setState(() {
+      _step = _FoodStep.analyzing;
+      _aiNote = null;
+      _fromAi = false;
+    });
+    final b = ref.read(backendProvider);
+    final photo = _photo;
+    if (b != null && photo != null) {
+      // PRD F7: deteksi makanan dengan model vision lewat Edge Function.
+      try {
+        final r = await AiClient(b.client).detectFood(photo, _mime, child: _child);
+        if (!mounted) return;
+        _items = [for (final i in r.items) _Item(i.foodId, i.grams)];
+        _fromAi = true;
+        _aiNote = r.items.isEmpty
+            ? (r.note.isEmpty ? 'AI tidak mengenali makanan di foto. Tambahkan makanan secara manual.' : r.note)
+            : r.note;
+        _finishAnalysis();
+        return;
+      } on AiUnavailable catch (e) {
+        _aiNote = '${e.message} Ditampilkan perkiraan contoh — koreksi sebelum menyimpan.';
+      }
+    } else {
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+    }
     if (!mounted) return;
     final m = _child.ageMonths;
     _items = _sample
@@ -116,6 +157,10 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
             : m < 12
                 ? [_Item('nasi', 60), _Item('ayam', 20), _Item('bayam', 20)]
                 : [_Item('nasi', 80), _Item('ikan', 30), _Item('brokoli', 25)];
+    _finishAnalysis();
+  }
+
+  void _finishAnalysis() {
     _time = DateTime.now();
     _meal = mealForNow(_time);
     setState(() => _step = _FoodStep.result);
@@ -126,6 +171,8 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
         _photo = null;
         _sample = false;
         _items = [];
+        _aiNote = null;
+        _fromAi = false;
       });
 
   NutrientTotal get _total => _items.fold(const NutrientTotal(), (a, i) {
@@ -134,19 +181,35 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
         return a + NutrientTotal(kcal: f.kcal * k, protein: f.protein * k, carb: f.carb * k, fat: f.fat * k, fiber: f.fiber * k);
       });
 
-  void _save() {
+  Future<void> _save() async {
+    if (_saving) return;
     if (_items.isEmpty) return showError(context, ArgumentError('Belum ada makanan. Tambahkan minimal satu makanan.'));
     final now = DateTime.now();
     final day = DateTime(now.year, now.month, now.day);
+    final log = ref.read(foodLogProvider.notifier);
+    setState(() => _saving = true);
     try {
-      ref.read(foodLogProvider.notifier).addAll([
+      // PRD F3: foto ikut disimpan (bucket privat) agar bisa dilihat lagi oleh orang tua & nakes.
+      String? path;
+      final photo = _photo;
+      if (photo != null) {
+        try {
+          path = await log.uploadPhoto(childId: widget.childId, kind: 'food', bytes: photo, mime: _mime);
+        } catch (e) {
+          if (mounted) showError(context, ArgumentError('Foto gagal diunggah (${describeBackendError(e)}). Catatan makan tetap disimpan.'));
+        }
+      }
+      log.addAll([
         for (final i in _items)
-          FoodEntry(id: newId('f'), childId: widget.childId, date: day, meal: _meal, foodId: i.foodId, grams: i.grams),
+          FoodEntry(id: newId('f'), childId: widget.childId, date: day, meal: _meal, foodId: i.foodId, grams: i.grams, photoPath: path),
       ]);
+      if (!mounted) return;
       showInfo(context, 'Makanan ${_meal.label.toLowerCase()} tersimpan.');
       context.pushReplacement('/child/${widget.childId}/nutrition');
     } catch (e) {
-      showError(context, e);
+      if (mounted) showError(context, e);
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -286,9 +349,10 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
           ]),
         );
     return [
-      const Padding(
-        padding: EdgeInsets.only(top: 4, bottom: 12),
-        child: Text('Estimasi Gizi (Simulasi)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: Colors.black)),
+      Padding(
+        padding: const EdgeInsets.only(top: 4, bottom: 12),
+        child: Text(_fromAi ? 'Estimasi Gizi (AI)' : 'Estimasi Gizi (Simulasi)',
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: Colors.black)),
       ),
       GwCard(
         padding: const EdgeInsets.fromLTRB(18, 4, 18, 16),
@@ -299,10 +363,16 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
           row('Serat', '${fmtG(t.fiber)} g'),
           row('Kalori', '${t.kcal.round()} kcal', last: true),
           const SizedBox(height: 8),
-          const Text(
-            'Catatan: Deteksi ini adalah simulasi. Diperlukan integrasi dengan model AI untuk hasil yang akurat. '
-            'Periksa daftar makanan di bawah dan koreksi bila tidak sesuai.',
-            style: TextStyle(fontStyle: FontStyle.italic, color: textGray, fontSize: 13),
+          if (_aiNote != null && _aiNote!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(_aiNote!, style: const TextStyle(color: Color(0xFF1E40AF), fontSize: 13.5)),
+            ),
+          Text(
+            _fromAi
+                ? 'Catatan: Estimasi AI dari foto bisa keliru. Periksa daftar makanan dan porsinya di bawah, lalu koreksi bila tidak sesuai.'
+                : 'Catatan: Deteksi ini adalah simulasi (mode lokal/foto contoh). Periksa daftar makanan di bawah dan koreksi bila tidak sesuai.',
+            style: const TextStyle(fontStyle: FontStyle.italic, color: textGray, fontSize: 13),
           ),
         ]),
       ),
@@ -338,7 +408,7 @@ class _FoodPhotoPageState extends ConsumerState<FoodPhotoPage> {
           ChoiceChip(label: Text(m.label), selected: _meal == m, onSelected: (_) => setState(() => _meal = m)),
       ]),
       const SizedBox(height: 18),
-      PrimaryButton('Simpan & Lihat Perkembangan', onPressed: _save),
+      PrimaryButton(_saving ? 'Menyimpan…' : 'Simpan & Lihat Perkembangan', onPressed: _saving ? null : _save),
       const SizedBox(height: 12),
       SecondaryButton('Bagikan sebagai Postingan', icon: Icons.share_outlined, outlined: true, onPressed: () {
         if (_items.isEmpty) return;

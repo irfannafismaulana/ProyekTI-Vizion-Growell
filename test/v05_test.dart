@@ -85,12 +85,12 @@ void main() {
       final me = c.read(usersProvider.notifier).byId('u_dina');
       final engine = c.read(quizProvider.notifier);
       const settings = QuizSettings(questionCount: 10, secondsPerQuestion: 15);
-      expect(engine.createRoom(me: me, settings: settings, capacity: 3), isNotNull);
-      expect(engine.createRoom(me: me, settings: settings, capacity: 2), isNull);
+      expect(await engine.createRoom(me: me, settings: settings, capacity: 3), isNotNull);
+      expect(await engine.createRoom(me: me, settings: settings, capacity: 2), isNull);
       await Future<void>.delayed(const Duration(milliseconds: 4000));
       expect(c.read(quizProvider)!.players, hasLength(2));
       expect(c.read(quizProvider)!.isFull, isTrue);
-      expect(engine.createRoom(me: me, settings: settings, capacity: 4), isNull);
+      expect(await engine.createRoom(me: me, settings: settings, capacity: 4), isNull);
       await Future<void>.delayed(const Duration(milliseconds: 4000));
       expect(c.read(quizProvider)!.players, hasLength(4));
       engine.leave();

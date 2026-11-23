@@ -25,7 +25,11 @@ class AppUser {
     this.specialty,
     this.experienceYears,
     this.workplace,
+    this.strDocumentPath,
   });
+
+  /// Jalur dokumen STR di bucket privat `str-documents` (PRD F2); null = belum diunggah.
+  final String? strDocumentPath;
 
   final String id;
   final String name;
@@ -45,7 +49,8 @@ class AppUser {
 
   bool get isVerifiedHealth => role == Role.health && verified;
 
-  AppUser copyWith({bool? verified, String? password, String? name}) => AppUser(
+  AppUser copyWith({bool? verified, String? password, String? name, String? strDocumentPath}) => AppUser(
+        strDocumentPath: strDocumentPath ?? this.strDocumentPath,
         id: id,
         name: name ?? this.name,
         email: email,
@@ -92,6 +97,7 @@ class Measurement {
     required this.weightKg,
     required this.heightCm,
     required this.result,
+    this.photoPath,
   });
 
   final String id;
@@ -100,6 +106,9 @@ class Measurement {
   final double weightKg;
   final double heightCm;
   final GrowthResult result;
+
+  /// Foto anak di bucket privat `photos` (PRD F3), bila pengukuran disertai foto.
+  final String? photoPath;
 }
 
 class Food {
@@ -151,6 +160,7 @@ class FoodEntry {
     required this.meal,
     required this.foodId,
     required this.grams,
+    this.photoPath,
   });
 
   final String id;
@@ -159,6 +169,9 @@ class FoodEntry {
   final Meal meal;
   final String foodId;
   final double grams;
+
+  /// Foto makanan di bucket privat `photos` (PRD F3); satu foto bisa dipakai beberapa entri.
+  final String? photoPath;
 }
 
 class Article {

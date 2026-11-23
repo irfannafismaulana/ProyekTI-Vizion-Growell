@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'config.dart';
 import 'models.dart';
 import 'state/providers.dart';
 import 'ui/admin_pages.dart';
@@ -44,7 +45,8 @@ final routerProvider = Provider<GoRouter>((ref) {
     initialLocation: '/login',
     redirect: (context, state) {
       final path = state.uri.path;
-      if (path.startsWith('/demo/')) return null;
+      // PRD F4: login cepat akun demo hanya pada build demo / mode lokal.
+      if (path.startsWith('/demo/')) return ref.read(showDemoProvider) ? null : '/login';
       final user = ref.read(currentUserProvider);
       if (user == null) return _public.contains(path) ? null : '/login';
       if (user.role == Role.health && !user.verified) return path == '/pending' ? null : '/pending';
@@ -116,6 +118,19 @@ class GroWellApp extends ConsumerWidget {
       messengerKey.currentState
         ?..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(content: Text(msg), backgroundColor: const Color(0xFFDC2626)));
+    });
+    // PRD F8: push yang masuk saat aplikasi terbuka ditampilkan sebagai pemberitahuan.
+    ref.listen(pushMessageProvider, (_, m) {
+      if (m == null) return;
+      final route = m.route;
+      messengerKey.currentState
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text(m.body.isEmpty ? m.title : '${m.title}\n${m.body}'),
+          backgroundColor: brandBlue,
+          duration: const Duration(seconds: 6),
+          action: route == null ? null : SnackBarAction(label: 'Buka', textColor: Colors.white, onPressed: () => router.push(route)),
+        ));
     });
     return MaterialApp.router(
       scaffoldMessengerKey: messengerKey,

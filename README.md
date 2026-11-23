@@ -2,10 +2,21 @@
 
 **GroWell** adalah aplikasi pendamping tumbuh kembang **baduta (anak usia 0–24 bulan)** untuk mendukung pencegahan stunting. Aplikasi menghubungkan tiga kelompok pengguna, yaitu **orang tua**, **remaja**, dan **tenaga kesehatan (nakes)**, ditambah **admin** yang memverifikasi nakes.
 
-Versi ini adalah **prototype v0.5**:
+Versi ini adalah **v0.6**:
 - Tampilan mengikuti desain Figma.
-- Dibuat dengan **Flutter (web)**.
+- Dibuat dengan **Flutter** (web + Android).
 - Data disimpan di **Supabase (PostgreSQL)**, baik di laptop sendiri lewat Docker maupun **online** (Supabase cloud).
+
+Daftar fitur yang masih simulasi dan rencana menjadikannya live ada di **[PRD.md](PRD.md)**.
+
+**Baru di v0.6** (fitur live, lihat PRD fase 1–4):
+- **Kuis antar-perangkat sungguhan**: host membuat ruang 2/4 pemain, teman bergabung dengan kode dari HP/laptop lain. Soal, waktu, dan nilai diatur **server** (Supabase Realtime + fungsi database), sehingga skor tidak bisa dipalsukan. Mode **Latihan dengan bot** tetap ada.
+- **AI lewat NanoGPT**: *Asisten Ahli Gizi* menjawab dengan model bahasa, dan **foto makanan** dikenali model vision lalu dicocokkan ke tabel pangan. Kunci API hanya ada di server (Edge Function `ai`), dengan kuota harian per pengguna.
+- **Dokumen STR asli**: nakes mengunggah PDF/JPG STR saat daftar; admin membuka dokumen aslinya sebelum verifikasi.
+- **Foto tersimpan**: foto makanan & foto anak disimpan di Storage privat.
+- **Push notification (Firebase)**: pesan konsultasi, catatan, jadwal kontrol, verifikasi STR, dan pengingat harian. Aktif setelah konfigurasi Firebase diisi.
+- **Mode rilis** (`-Release` / `GROWELL_DEMO=false`): tanpa tombol akun demo dan fitur simulasi.
+- **Build Android (APK)**.
 
 **Baru di v0.5** (mengikuti desain di folder `update svg`):
 - **Kuis multiplayer bertema biru**: pilih mode **2 pemain** (duel) atau **4 pemain** (battle), lobi dengan status "Siap", kartu skor tiap pemain saat bermain, dan layar **Hasil Pertandingan** (pemenang + peringkat).
@@ -47,7 +58,8 @@ Versi ini adalah **prototype v0.5**:
 - **Tombol + (input manual)**:
   - *Makanan Anak*: pilih tanggal & waktu makan, ketuk menu (atau cari), atur porsi dalam gram; total kalori/protein/karbo/lemak langsung terhitung.
   - *Tinggi & Berat Badan*: isi hasil timbang & ukur, dengan pengukuran terakhir sebagai acuan.
-- **Estimasi dari foto** (simulasi AI): foto makanan dan foto anak tetap tersedia di baris bawah lembar tombol +.
+- **Foto makanan (AI)**: foto dikenali model vision (NanoGPT) → daftar makanan + porsi yang bisa dikoreksi → disimpan beserta fotonya.
+- **Foto anak**: foto disimpan sebagai catatan; angka tinggi/berat **bukan** hasil ukur (tidak akurat dari foto biasa) dan harus diganti hasil timbang posyandu.
 - **Catatan makan dan gizi**:
   - Mencatat makan pagi, siang, malam, dan selingan.
   - Merangkum asupan energi dan zat gizi per hari dan per minggu.
@@ -57,20 +69,21 @@ Versi ini adalah **prototype v0.5**:
   - Chat secara langsung (realtime).
   - Catatan konsultasi yang bisa diunduh sebagai PDF.
   - Jadwal kontrol.
-- **Asisten**: tanya-jawab seputar gizi dan tumbuh kembang (berbasis aturan).
+- **Asisten Ahli Gizi (AI)**: tanya-jawab seputar gizi dan tumbuh kembang memakai model bahasa (NanoGPT), memakai usia & status anak. Bila AI tidak tersedia, kembali ke jawaban berbasis aturan.
+- **Push notification**: balasan konsultasi, catatan, jadwal kontrol, pengingat kontrol besok & pengingat menimbang.
 
 ### Remaja
 - Materi edukasi gizi dan pencegahan stunting, termasuk Reels video dari nakes.
-- **Kuis** dengan skor, streak, lencana, podium, dan papan peringkat mingguan.
+- **Kuis antar-perangkat** 2/4 pemain dengan kode ruang, nilai dihitung server, lencana, dan papan peringkat mingguan.
 
 ### Tenaga kesehatan (nakes)
 - Dashboard baduta binaan per posyandu beserta status pertumbuhannya.
 - Membalas chat, menulis catatan konsultasi, dan membuat jadwal kontrol.
 - **Tab Video**: unggah video edukasi singkat (MP4/WebM/MOV, maks. 3 menit & 50 MB), pilih sasaran (orang tua/remaja), pratinjau, dan hapus.
-- Akun baru harus diverifikasi STR oleh admin sebelum bisa dipakai.
+- Akun baru mengunggah dokumen STR dan harus diverifikasi admin sebelum bisa dipakai.
 
 ### Admin
-- Memverifikasi pendaftaran nakes (STR).
+- Memverifikasi pendaftaran nakes: membuka dokumen STR asli (tautan sementara 5 menit) lalu menekan Verifikasi.
 
 ### Umum
 - Daftar akun dan masuk.
@@ -83,11 +96,13 @@ Versi ini adalah **prototype v0.5**:
 
 | Bagian | Teknologi |
 | --- | --- |
-| Aplikasi | Flutter 3.41 (Dart 3.11), target **web/Chrome** |
+| Aplikasi | Flutter 3.41 (Dart 3.11), target **web/Chrome** dan **Android** |
 | State dan navigasi | Riverpod 3, go_router |
 | Grafik, PDF, video | fl_chart, pdf, video_player |
-| Backend | Supabase: PostgreSQL 17, Auth, Realtime, Storage (video), Studio |
-| Infrastruktur lokal | Supabase CLI di atas Docker Desktop (WSL2 di Windows) |
+| Backend | Supabase: PostgreSQL 17, Auth, Realtime, Storage (video, foto, STR), Edge Functions (Deno), Studio |
+| AI | NanoGPT (API kompatibel OpenAI), model bawaan `deepseek/deepseek-v4-flash-latest` |
+| Push notification | Firebase Cloud Messaging (HTTP v1) |
+| Infrastruktur lokal | Supabase CLI 2.122 di atas Docker Desktop (WSL2 di Windows) |
 
 ---
 
@@ -176,9 +191,35 @@ Halaman login menampilkan alamat database yang sedang dipakai (`…supabase.co` 
 Proyek online GroWell: `growell` (ref `zreumtxexbpufxdfdmpw`, region Singapura), sudah berisi skema, bucket video, dan data contoh yang sama dengan lokal (akun demo, password `demo123`).
 
 Perbedaan dengan lokal:
-- **Proyek dijeda** bila 7 hari tidak dipakai. Buka dashboard Supabase → proyek `growell` → **Resume project** (± beberapa menit) sebelum demo.
-- **Lupa password** belum bisa dipakai online: paket gratis tanpa SMTP sendiri hanya mengirim email ke anggota tim dan tidak mengizinkan template email berisi kode OTP.
+- **Proyek dijeda** bila 7 hari tidak dipakai. Buka https://supabase.com/dashboard → proyek `growell` → **Restore project** (± 2–5 menit) sebelum demo. Proyek gratis yang dijeda > 90 hari tidak bisa dipulihkan dari dashboard.
+- **Lupa password** online butuh SMTP sendiri (PRD F1): paket gratis tanpa SMTP hanya mengirim email ke anggota tim.
+- Fitur v0.6 (kuis live, AI, STR, foto, push) perlu migrasi + Edge Function dikirim ke cloud dulu — lihat [Pindah ke Supabase cloud](#pindah-ke-supabase-cloud).
 - Tanggal data contoh mengikuti hari saat data dimasukkan (3 Nov 2026), jadi lama-lama terlihat "lampau".
+
+### Mode rilis (tanpa fitur demo)
+Tambahkan `-Release` (atau `--dart-define=GROWELL_DEMO=false` pada `flutter run/build`): tombol akun demo, kode OTP contoh, rute `/demo/…`, dan tombol "foto contoh / tanpa foto (demo)" disembunyikan. Database produksi dibuat **tanpa** `--include-seed`.
+
+### AI (NanoGPT) — opsional
+1. Salin `supabase/functions/.env.example` menjadi `supabase/functions/.env` lalu isi `NANOGPT_API_KEY` (dari https://nano-gpt.com/api). File ini diabaikan git.
+2. Lokal: jalankan ulang `demo.ps1` (Supabase lokal membaca `.env` saat dinyalakan; bila sudah berjalan, `npx supabase@2.122.1 stop` lalu jalankan lagi).
+3. Cloud: `npx supabase@2.122.1 secrets set --env-file supabase/functions/.env` lalu `npx supabase@2.122.1 functions deploy`.
+
+Tanpa kunci, asisten & foto makanan tetap berjalan dengan jawaban berbasis aturan/simulasi dan menampilkan pemberitahuan.
+
+### Push notification (Firebase) — opsional
+1. Buat proyek di https://console.firebase.google.com (gratis) → tambahkan aplikasi **Web** dan **Android** (package `id.growell.growell`).
+2. Project settings → Cloud Messaging → **Web Push certificates** → buat *key pair* (VAPID).
+3. Salin `firebase_config.example.json` menjadi `firebase_config.json` dan isi nilainya (apiKey, projectId, senderId, appId web/android, VAPID). File ini diabaikan git; `demo.ps1` memakainya otomatis.
+4. Project settings → Service accounts → **Generate new private key** → isi JSON itu (satu baris) ke `FIREBASE_SERVICE_ACCOUNT` di `supabase/functions/.env`. **Jangan di-commit.**
+5. Pengingat harian (cloud): isi `CRON_SECRET` (string acak) di `.env`, deploy, lalu Dashboard Supabase → Integrations → **Cron** → job harian `0 0 * * *` (07.00 WIB) *HTTP request* POST ke `https://<ref>.supabase.co/functions/v1/reminders` dengan header `x-cron-secret: <CRON_SECRET>`.
+
+### Build Android (APK)
+Butuh Android SDK + JDK 17 (`flutter doctor` baris *Android toolchain* bercentang).
+```powershell
+flutter build apk --release --dart-define-from-file=supabase_cloud.json --dart-define=GROWELL_DEMO=false
+# hasil: build\app\outputs\flutter-apk\app-release.apk
+```
+APK memakai database **online** (HP tidak bisa menjangkau `127.0.0.1` laptop). Tambahkan `--dart-define-from-file=firebase_config.json` untuk push notification. Build ini masih ditandatangani kunci *debug*; untuk Play Store buat *keystore* rilis sendiri.
 
 ---
 
@@ -220,6 +261,7 @@ Alamat berikut hanya berlaku pada Mode B.
 | Supabase Studio | http://127.0.0.1:54323 | Melihat/mengedit tabel, SQL editor, daftar pengguna |
 | Mailpit | http://127.0.0.1:54324 | Kotak masuk email lokal (kode OTP) |
 | API | http://127.0.0.1:54321 | Dipakai aplikasi |
+| Edge Functions | http://127.0.0.1:54321/functions/v1/ai, `/notify`, `/reminders` | AI & push (dipanggil aplikasi) |
 | PostgreSQL | `postgresql://postgres:postgres@127.0.0.1:54322/postgres` | Koneksi langsung (DBeaver/pgAdmin) |
 
 Kunci di `supabase_local.json` adalah kunci demo bawaan Supabase CLI untuk lokal, **bukan rahasia**.
@@ -248,8 +290,8 @@ Untuk pameran, tekan **F11** di Chrome agar tampil layar penuh.
 
 ```bash
 flutter analyze              # analisis kode
-flutter test                 # 112 uji aplikasi (berjalan pada mode lokal, tanpa Docker)
-npx supabase test db         # 26 uji hak akses RLS di database (Supabase lokal harus berjalan)
+flutter test                 # 120 uji aplikasi (berjalan pada mode lokal, tanpa Docker)
+npx supabase test db         # 45 uji hak akses RLS + kuis live di database (Supabase lokal harus berjalan)
 ```
 
 ---
@@ -260,27 +302,35 @@ npx supabase test db         # 26 uji hak akses RLS di database (Supabase lokal 
 lib/
 ├─ main.dart              Titik masuk; menyambungkan ke Supabase bila dart-define tersedia
 ├─ app.dart               Routing (go_router), tema, bingkai tampilan
+├─ config.dart            Saklar build demo/rilis (GROWELL_DEMO)
 ├─ models.dart            Model data
 ├─ core/                  Logika murni: z-score WHO, status gizi, aturan kuis, perhitungan nutrisi
 ├─ data/                  Data statis: tabel WHO, bahan makanan, resep, bank soal kuis, konten edukasi, data contoh
 ├─ state/
 │  ├─ providers.dart      State aplikasi (Riverpod); perubahan langsung tampil lalu ditulis ke database
-│  ├─ backend.dart        Akses Supabase: Auth, muat data, tulis data, Realtime
-│  └─ quiz_engine.dart    Jalannya kuis
+│  ├─ backend.dart        Akses Supabase: Auth, muat data, tulis data, Storage, Realtime
+│  ├─ quiz_engine.dart    Jalannya kuis (live lewat server, atau lawan bot)
+│  ├─ quiz_live.dart      RPC & Realtime kuis antar-perangkat
+│  ├─ ai.dart             Klien Edge Function AI (chat & foto makanan)
+│  └─ push.dart           Pendaftaran push notification (Firebase)
 ├─ ui/                    Halaman per fitur (auth, beranda, pertumbuhan, gizi, edukasi/Reels, video nakes, kuis, konsultasi, nakes, admin, asisten)
-└─ util/                  Unduh berkas (PDF) di web
+└─ util/                  Unduh berkas (PDF) di web, pemilih berkas (STR)
 assets/                   Logo dan gambar
+web/firebase-messaging-sw.js  Service worker push notification web
 supabase/
 ├─ config.toml            Konfigurasi Supabase (lokal; bagian Auth juga dipakai untuk cloud)
-├─ migrations/            Skema: 14 tabel, 1 view, trigger validasi, fungsi bantu, kebijakan RLS per peran, Realtime,
-│                         bucket Storage `edu-videos` (video nakes)
+├─ migrations/            Skema: tabel, view, trigger validasi, fungsi bantu, kebijakan RLS per peran, Realtime,
+│                         bucket Storage (`edu-videos`, `photos`, `str-documents`), kuis live (RPC `quiz_*`)
+├─ functions/             Edge Functions (Deno): ai (NanoGPT), notify & reminders (FCM); .env.example
 ├─ seed.sql               Data contoh (11 akun demo, 9 anak, pengukuran, catatan makan, chat)
 ├─ templates/             Email OTP reset password (Bahasa Indonesia)
 └─ tests/database/        Uji RLS (pgTAP)
 test/                     Uji Flutter (unit + widget)
 supabase_local.json       URL + kunci publik Supabase lokal
 supabase_cloud.json       URL + kunci publik Supabase online (contoh: supabase_cloud.example.json)
-demo.ps1                  Skrip demo sekali jalan (Windows): lokal, -Reset, atau -Cloud
+firebase_config.json      Konfigurasi Firebase (opsional, tidak di-commit; contoh: firebase_config.example.json)
+demo.ps1                  Skrip demo sekali jalan (Windows): lokal, -Reset, -Cloud, -Release
+PRD.md                    Fitur yang masih simulasi & rencana menjadikannya live
 ```
 
 ---
@@ -297,6 +347,10 @@ demo.ps1                  Skrip demo sekali jalan (Windows): lokal, -Reset, atau
 | Error versi paket saat `flutter pub get` | Pastikan Flutter ≥ 3.41 (`flutter upgrade`). |
 | Video nakes tidak bisa diputar / durasi tidak terbaca | Gunakan MP4 (H.264). Video HEVC dari sebagian iPhone belum didukung Chrome; ubah ke H.264 dulu. |
 | Unggah video ditolak | Pastikan akun nakes sudah terverifikasi, durasi ≤ 3 menit, dan ukuran ≤ 50 MB. |
+| Asisten/foto makanan menampilkan "AI belum dikonfigurasi" | Isi `NANOGPT_API_KEY` di `supabase/functions/.env`, lalu nyalakan ulang Supabase (lokal) atau `secrets set` + `functions deploy` (cloud). |
+| "Batas harian AI tercapai" | Kuota per pengguna: 40 chat & 15 foto per hari (ubah lewat `AI_CHAT_DAILY_LIMIT` / `AI_PHOTO_DAILY_LIMIT`). |
+| Gabung ruang kuis: "Ruang … tidak ditemukan" | Pastikan kedua perangkat memakai database yang sama (keduanya `-Cloud`, atau keduanya lokal di laptop yang sama) dan kuis belum dimulai. |
+| Tidak ada push notification | Isi `firebase_config.json` & `FIREBASE_SERVICE_ACCOUNT`, izinkan notifikasi di browser/HP, lalu masuk ulang. |
 
 ---
 
@@ -313,6 +367,7 @@ Langkah membuat/memperbarui proyek online (sekali saja, oleh pemilik akun Supaba
    npx supabase config push             # pengaturan Auth (tanpa konfirmasi email, template OTP)
    ```
    Perubahan skema berikutnya cukup `npx supabase db push` (hanya migrasi baru yang dikirim).
+   Edge Function v0.6: `npx supabase secrets set --env-file supabase/functions/.env` lalu `npx supabase functions deploy`.
 3. Buat `supabase_cloud.json` berisi `SUPABASE_URL` dan `SUPABASE_PUBLISHABLE_KEY` milik proyek cloud. *Publishable key* memang untuk aplikasi (aman dibagikan, dilindungi RLS). **Jangan pernah commit** *secret key* / *service role key* / password database.
 4. Jalankan `demo.ps1 -Cloud`.
 
@@ -322,8 +377,9 @@ Catatan paket gratis Supabase: database 500 MB, Storage 1 GB (± 20 video 50 MB)
 
 ## Belum termasuk
 
-- Kuis antar-perangkat masih melawan bot; skor dan lencana sudah tersimpan di database.
-- Foto makanan/anak belum diunggah ke Supabase Storage (video nakes sudah).
-- Video nakes belum punya thumbnail otomatis, komentar, dan jumlah suka dari semua pengguna.
-- Estimasi pertumbuhan dari foto masih simulasi, belum memakai model AI sungguhan.
-- Push notification (FCM).
+Rincian dan rencananya ada di [PRD.md](PRD.md) (fase 5–6):
+- Panggilan suara/video konsultasi masih simulasi (perlu layanan WebRTC).
+- Reels bawaan masih konten contoh; video nakes belum punya thumbnail otomatis, komentar, dan jumlah suka dari semua pengguna.
+- Estimasi tinggi/berat dari foto anak sengaja tidak dijadikan fitur ukur (tidak akurat secara medis).
+- Konten (artikel, aturan status, bank soal 40 soal) masih draf dan perlu ditinjau nakes.
+- Build iOS belum dicoba; APK masih ditandatangani kunci debug.

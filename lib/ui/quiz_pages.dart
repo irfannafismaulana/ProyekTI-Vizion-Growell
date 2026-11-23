@@ -277,14 +277,21 @@ class _QuizHomeState extends ConsumerState<QuizHome> {
   double _count = 10;
   double _seconds = 15;
 
-  void _create() {
-    final err = ref
+  bool _busy = false;
+
+  Future<void> _create({bool practice = false}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final err = await ref
         .read(quizProvider.notifier)
         .createRoom(
           me: ref.read(currentUserProvider)!,
           settings: QuizSettings(difficulty: _difficulty, category: _category, questionCount: _count.round(), secondsPerQuestion: _seconds.round()),
           capacity: _capacity,
+          practice: practice,
         );
+    if (!mounted) return;
+    setState(() => _busy = false);
     if (err != null) return showError(context, ArgumentError(err));
     context.push('/quiz/room');
   }
@@ -327,6 +334,7 @@ class _QuizHomeState extends ConsumerState<QuizHome> {
     final lb = ref.watch(leaderboardProvider).entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     final rank = lb.indexWhere((e) => e.key == me.name);
     final badges = ref.watch(badgesProvider)[me.id] ?? const <String>{};
+    final live = ref.watch(backendProvider) != null;
     return Scaffold(
       backgroundColor: _quizBg,
       body: ListView(
@@ -486,12 +494,24 @@ class _QuizHomeState extends ConsumerState<QuizHome> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                _GradientButton('Buat Ruang', onPressed: _create),
+                _GradientButton(_busy ? 'Membuat ruang…' : 'Buat Ruang', onPressed: _busy ? null : () => _create()),
                 const SizedBox(height: 6),
                 TextButton(
                   onPressed: () => context.push('/quiz/join'),
                   child: const Text('Sudah punya kode ruang? Gabung ruang', style: TextStyle(fontWeight: FontWeight.w700)),
                 ),
+                if (live)
+                  TextButton.icon(
+                    onPressed: _busy ? null : () => _create(practice: true),
+                    icon: const Icon(Icons.smart_toy_outlined, size: 18),
+                    label: const Text('Latihan dengan bot (tidak masuk papan skor)'),
+                  )
+                else
+                  const Text(
+                    'Mode lokal: lawan adalah bot simulasi.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: textGray, fontSize: 12.5),
+                  ),
                 const SizedBox(height: 8),
                 _Card(
                   onTap: () => context.push('/quiz/leaderboard'),
@@ -589,9 +609,14 @@ class JoinRoomPage extends ConsumerStatefulWidget {
 
 class _JoinRoomPageState extends ConsumerState<JoinRoomPage> {
   final _code = TextEditingController();
+  bool _busy = false;
 
-  void _join() {
-    final err = ref.read(quizProvider.notifier).joinRoom(me: ref.read(currentUserProvider)!, code: _code.text);
+  Future<void> _join() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final err = await ref.read(quizProvider.notifier).joinRoom(me: ref.read(currentUserProvider)!, code: _code.text);
+    if (!mounted) return;
+    setState(() => _busy = false);
     if (err != null) return showError(context, ArgumentError(err));
     context.pushReplacement('/quiz/room');
   }
@@ -633,12 +658,17 @@ class _JoinRoomPageState extends ConsumerState<JoinRoomPage> {
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
                         ),
                       ),
-                      const Text('Mode lokal: gunakan kode demo $demoRoomCode', style: TextStyle(color: textGray, fontSize: 12.5)),
+                      Text(
+                        ref.watch(backendProvider) == null
+                            ? 'Mode lokal: gunakan kode demo $demoRoomCode'
+                            : 'Minta kode 6 karakter dari host. Ruang harus belum dimulai dan belum penuh.',
+                        style: const TextStyle(color: textGray, fontSize: 12.5),
+                      ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 8),
-                _GradientButton('Gabung Ruang', onPressed: _join),
+                _GradientButton(_busy ? 'Menggabungkan…' : 'Gabung Ruang', onPressed: _busy ? null : _join),
               ],
             ),
           ),
@@ -833,9 +863,9 @@ class _Lobby extends ConsumerWidget {
                   _GradientButton(
                     'Mulai Quiz',
                     onPressed: s.isFull
-                        ? () {
-                            final err = ref.read(quizProvider.notifier).start();
-                            if (err != null) showError(context, ArgumentError(err));
+                        ? () async {
+                            final err = await ref.read(quizProvider.notifier).start();
+                            if (err != null && context.mounted) showError(context, ArgumentError(err));
                           }
                         : null,
                   ),

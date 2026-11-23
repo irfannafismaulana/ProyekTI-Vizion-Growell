@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -7,9 +8,11 @@ import 'package:supabase_flutter/supabase_flutter.dart' show AuthException;
 import '../core/zscore.dart';
 import '../data/seed.dart';
 import '../models.dart';
+import '../util/files.dart';
 import 'backend.dart';
+import 'push.dart';
 
-export 'backend.dart' show backendProvider, syncErrorProvider, demoEmails, describeBackendError;
+export 'backend.dart' show backendProvider, syncErrorProvider, pushMessageProvider, demoEmails, describeBackendError;
 
 /// Dua mode data:
 /// - lokal (tanpa konfigurasi Supabase, dipakai uji otomatis): data contoh di memori;
@@ -79,6 +82,19 @@ class UsersNotifier extends Notifier<List<AppUser>> {
     state = [for (final x in state) x.id == u.id ? x.copyWith(password: newPassword) : x];
   }
 
+  /// Unggah dokumen STR milik nakes yang sedang masuk (PRD F2).
+  /// Mode lokal hanya mencatat nama berkas (tidak ada penyimpanan).
+  Future<void> uploadStrDocument({required AppUser me, required PickedBytes file}) async {
+    if (me.role != Role.health) throw AccessDenied('Dokumen STR hanya untuk tenaga kesehatan.');
+    final err = validateStrFile(file.name, file.bytes.length);
+    if (err != null) throw ArgumentError(err);
+    final b = ref.read(backendProvider);
+    final path = b == null
+        ? 'lokal/${file.name}'
+        : await b.uploadStrDocument(bytes: file.bytes, mime: file.mime, extension: file.extension);
+    state = [for (final x in state) x.id == me.id ? x.copyWith(strDocumentPath: path) : x];
+  }
+
   /// Hanya admin yang boleh memverifikasi STR (ER-6.5).
   void verifyHealthWorker({required AppUser actor, required String userId}) {
     if (actor.role != Role.admin) throw AccessDenied('Hanya admin yang dapat memverifikasi STR.');
@@ -129,6 +145,11 @@ class SessionNotifier extends Notifier<String?> {
     await b.loadAll(ref.read);
     state = b.userId;
     b.subscribe(ref.read);
+    // PRD F8: daftar push notification (aktif hanya bila konfigurasi Firebase diisi).
+    unawaited(PushService.instance.register(
+      b.client,
+      onForeground: (title, body, route) => ref.read(pushMessageProvider.notifier).show(title, body, route),
+    ));
   }
 
   /// Lanjutkan sesi tersimpan di browser (mode database) saat aplikasi dibuka ulang.
@@ -149,6 +170,7 @@ class SessionNotifier extends Notifier<String?> {
     final b = _b;
     state = null;
     if (b != null) {
+      await PushService.instance.unregister(b.client);
       await b.signOut();
       _resetUserData(ref);
     }
@@ -162,13 +184,15 @@ class SessionNotifier extends Notifier<String?> {
     required Role role,
     String? strNumber,
     String? title,
+    PickedBytes? strFile,
   }) async {
     final b = _b;
     try {
       if (b == null) {
-        final u = ref.read(usersProvider.notifier).register(
-            name: name, email: email, password: password, role: role, strNumber: strNumber, title: title);
+        final users = ref.read(usersProvider.notifier);
+        final u = users.register(name: name, email: email, password: password, role: role, strNumber: strNumber, title: title);
         state = u.id;
+        if (strFile != null) await users.uploadStrDocument(me: users.byId(u.id), file: strFile);
         return null;
       }
       _checkRegistration(role, strNumber);
@@ -178,8 +202,16 @@ class SessionNotifier extends Notifier<String?> {
         'str_number': ?strNumber?.trim(),
         'title': ?title,
       });
-      if (!signedIn) return 'Akun dibuat. Periksa email untuk konfirmasi, lalu masuk.';
+      if (!signedIn) return 'Akun dibuat. Periksa email untuk konfirmasi, lalu masuk dan unggah dokumen STR.';
       await _enter(b);
+      if (strFile != null) {
+        final users = ref.read(usersProvider.notifier);
+        try {
+          await users.uploadStrDocument(me: users.byId(b.userId!), file: strFile);
+        } catch (e) {
+          return 'Akun dibuat, tetapi dokumen STR gagal diunggah (${describeBackendError(e)}). Unggah ulang dari halaman verifikasi.';
+        }
+      }
       return null;
     } on ArgumentError catch (e) {
       return '${e.message}';
@@ -310,13 +342,14 @@ class MeasurementsNotifier extends Notifier<List<Measurement>> {
 
   void replaceAll(List<Measurement> ms) => state = ms;
 
-  Measurement _make(Child child, DateTime date, double w, double h) => Measurement(
+  Measurement _make(Child child, DateTime date, double w, double h, {String? photoPath}) => Measurement(
         id: newId('m'),
         childId: child.id,
         date: date,
         weightKg: w,
         heightCm: h,
         result: assess(sex: child.sex, birthDate: child.birthDate, measuredAt: date, weightKg: w, heightCm: h),
+        photoPath: photoPath,
       );
 
   /// Validasi input (ER-6.2) lalu hitung z-score (ER-1.1). Pesan kesalahan
@@ -327,6 +360,7 @@ class MeasurementsNotifier extends Notifier<List<Measurement>> {
     required double weightKg,
     required double heightCm,
     String source = 'manual',
+    String? photoPath,
   }) {
     final day = DateTime(date.year, date.month, date.day);
     final today = DateTime.now();
@@ -342,7 +376,7 @@ class MeasurementsNotifier extends Notifier<List<Measurement>> {
     if (heightCm < 40 || heightCm > 120) {
       throw ArgumentError('Panjang/tinggi badan $heightCm cm tidak wajar untuk baduta. Isi dalam sentimeter, contoh 72,5.');
     }
-    final m = _make(child, day, weightKg, heightCm); // dapat melempar RangeError (umur > 24 bulan)
+    final m = _make(child, day, weightKg, heightCm, photoPath: photoPath); // dapat melempar RangeError (umur > 24 bulan)
     state = [...state, m];
     syncToBackend(ref, (b) => b.insertMeasurement(m, source: source), rollback: () => state = state.where((x) => x.id != m.id).toList());
     return m;
@@ -422,6 +456,13 @@ class FoodLogNotifier extends Notifier<List<FoodEntry>> {
 
   void add({required String childId, required DateTime date, required Meal meal, required String foodId, required double grams}) =>
       addAll([FoodEntry(id: newId('f'), childId: childId, date: date, meal: meal, foodId: foodId, grams: grams)]);
+
+  /// Unggah foto (PRD F3) ke folder anak; mengembalikan jalurnya, atau null pada mode lokal.
+  Future<String?> uploadPhoto({required String childId, required String kind, required Uint8List bytes, required String mime}) async {
+    final b = ref.read(backendProvider);
+    if (b == null) return null;
+    return b.uploadPhoto(childId: childId, kind: kind, id: newId('p'), bytes: bytes, mime: mime);
+  }
 
   void remove(String id) {
     final before = state;

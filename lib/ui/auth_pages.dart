@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../config.dart';
 import '../data/seed.dart';
 import '../models.dart';
 import '../state/providers.dart';
+import '../util/files.dart';
 import 'common.dart';
 
 final _emailRe = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
@@ -213,23 +215,25 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       if (_error != null) _ErrorText(_error!),
       _PanelButton(_busy ? 'Memuat data...' : 'Masuk', _busy ? () {} : _login),
       _SwitchLink('Belum Punya Akun?', 'Daftar', () => context.push('/register')),
-      const SizedBox(height: 26),
-      const Text('Akun demo (prototype – data contoh):', style: TextStyle(color: Colors.white70, fontSize: 13)),
-      const SizedBox(height: 8),
-      Wrap(spacing: 8, runSpacing: 8, children: [
-        chip(Icons.family_restroom, 'Orang tua', 'rani@demo.id'),
-        chip(Icons.school, 'Remaja', 'dina@demo.id'),
-        chip(Icons.medical_services, 'Tenaga kesehatan', 'sarah@demo.id'),
-        chip(Icons.hourglass_top, 'Nakes belum terverifikasi', 'candra@demo.id'),
-        chip(Icons.admin_panel_settings, 'Admin', 'admin@demo.id'),
-      ]),
-      const SizedBox(height: 8),
-      Text(
-        ref.watch(backendProvider) == null
-            ? 'Semua akun demo memakai password: demo123 • Mode lokal (data di memori)'
-            : 'Semua akun demo memakai password: demo123 • Terhubung ke database ${ref.watch(backendProvider)!.url}',
-        style: const TextStyle(color: Colors.white70, fontSize: 12),
-      ),
+      if (ref.watch(showDemoProvider)) ...[
+        const SizedBox(height: 26),
+        const Text('Akun demo (prototype – data contoh):', style: TextStyle(color: Colors.white70, fontSize: 13)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          chip(Icons.family_restroom, 'Orang tua', 'rani@demo.id'),
+          chip(Icons.school, 'Remaja', 'dina@demo.id'),
+          chip(Icons.medical_services, 'Tenaga kesehatan', 'sarah@demo.id'),
+          chip(Icons.hourglass_top, 'Nakes belum terverifikasi', 'candra@demo.id'),
+          chip(Icons.admin_panel_settings, 'Admin', 'admin@demo.id'),
+        ]),
+        const SizedBox(height: 8),
+        Text(
+          ref.watch(backendProvider) == null
+              ? 'Semua akun demo memakai password: demo123 • Mode lokal (data di memori)'
+              : 'Semua akun demo memakai password: demo123 • Terhubung ke database ${ref.watch(backendProvider)!.url}',
+          style: const TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+      ],
     ]);
   }
 }
@@ -251,14 +255,25 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
   final _str = TextEditingController();
   Role _role = Role.parent;
   String _profession = 'Dokter umum';
-  bool _strUploaded = false;
+  PickedBytes? _strFile;
+  bool _busy = false;
+
+  Future<void> _pickStr() async {
+    try {
+      final f = await pickStrDocument();
+      if (f != null) setState(() => _strFile = f);
+    } catch (e) {
+      if (mounted) showError(context, e);
+    }
+  }
 
   Future<void> _submit() async {
-    if (!_form.currentState!.validate()) return;
-    if (_role == Role.health && !_strUploaded) {
-      showError(context, ArgumentError('Unggah dokumen STR terlebih dahulu.'));
+    if (_busy || !_form.currentState!.validate()) return;
+    if (_role == Role.health && _strFile == null) {
+      showError(context, ArgumentError('Pilih berkas dokumen STR (PDF/JPG/PNG, maks. 5 MB) terlebih dahulu.'));
       return;
     }
+    setState(() => _busy = true);
     final err = await ref.read(sessionProvider.notifier).register(
           name: '${_first.text.trim()} ${_last.text.trim()}'.trim(),
           email: _email.text,
@@ -266,8 +281,11 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
           role: _role,
           strNumber: _role == Role.health ? _str.text : null,
           title: _role == Role.health ? _profession : null,
+          strFile: _role == Role.health ? _strFile : null,
         );
-    if (err != null && mounted) showError(context, ArgumentError(err));
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (err != null) showError(context, ArgumentError(err));
   }
 
   @override
@@ -352,13 +370,13 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               padding: const EdgeInsets.symmetric(vertical: 14),
             ),
-            icon: Icon(_strUploaded ? Icons.check_circle : Icons.upload_file),
-            label: Text(_strUploaded ? 'dokumen_STR.pdf (simulasi)' : 'Unggah Dokumen STR'),
-            onPressed: () => setState(() => _strUploaded = true),
+            icon: Icon(_strFile != null ? Icons.check_circle : Icons.upload_file),
+            label: Text(_strFile?.name ?? 'Pilih Dokumen STR', maxLines: 1, overflow: TextOverflow.ellipsis),
+            onPressed: _pickStr,
           ),
           const Padding(
             padding: EdgeInsets.only(top: 6),
-            child: Text('Prototype: unggahan disimulasikan. Akun aktif setelah admin memverifikasi STR.',
+            child: Text('PDF/JPG/PNG maks. 5 MB. Dokumen hanya bisa dilihat Anda dan admin. Akun aktif setelah admin memverifikasi STR.',
                 style: TextStyle(color: Colors.white70, fontSize: 12)),
           ),
         ],
@@ -376,7 +394,7 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
           password: true,
           validator: (v) => v != _pass.text ? 'Konfirmasi tidak sama dengan password' : null,
         ),
-        _PanelButton('Daftar', _submit),
+        _PanelButton(_busy ? 'Mendaftarkan...' : 'Daftar', _submit),
         _SwitchLink('Sudah Punya Akun?', 'Masuk', () => context.go('/login')),
       ]),
     );
@@ -411,6 +429,8 @@ class _ForgotPasswordPageState extends ConsumerState<ForgotPasswordPage> {
           context,
           !remote
               ? 'Kode OTP terkirim ke email (mode lokal: ${SessionNotifier.demoOtp})'
+              : !ref.read(showDemoProvider)
+              ? 'Kode OTP dikirim ke email. Periksa kotak masuk (atau folder spam).'
               : RegExp(r'127\.0\.0\.1|localhost').hasMatch(ref.read(backendProvider)!.url)
                   ? 'Kode OTP dikirim ke email. Database lokal: buka Mailpit http://127.0.0.1:54324'
                   : 'Kode OTP dikirim ke email. Periksa kotak masuk (atau folder spam).',
@@ -465,11 +485,35 @@ class _ForgotPasswordPageState extends ConsumerState<ForgotPasswordPage> {
 }
 
 // ---------------------------------------------------------------- Menunggu verifikasi STR
-class PendingVerificationPage extends ConsumerWidget {
+class PendingVerificationPage extends ConsumerStatefulWidget {
   const PendingVerificationPage({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PendingVerificationPage> createState() => _PendingVerificationPageState();
+}
+
+class _PendingVerificationPageState extends ConsumerState<PendingVerificationPage> {
+  bool _busy = false;
+
+  Future<void> _upload() async {
+    final me = ref.read(currentUserProvider);
+    if (me == null) return;
+    try {
+      final f = await pickStrDocument();
+      if (f == null) return;
+      setState(() => _busy = true);
+      await ref.read(usersProvider.notifier).uploadStrDocument(me: me, file: f);
+      if (mounted) showInfo(context, 'Dokumen STR terunggah. Admin akan memeriksanya.');
+    } catch (e) {
+      if (mounted) showError(context, ArgumentError(e is ArgumentError ? '${e.message}' : describeBackendError(e)));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final u = ref.watch(currentUserProvider);
+    final hasDoc = u?.strDocumentPath != null;
     return Scaffold(
       backgroundColor: const Color(0xFFEFF5FF),
       body: Center(
@@ -489,9 +533,23 @@ class PendingVerificationPage extends ConsumerWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: textGray, fontSize: 15, height: 1.4),
               ),
-              const SizedBox(height: 8),
-              const Text('Demo: keluar lalu masuk sebagai Admin untuk memverifikasi akun ini.',
-                  textAlign: TextAlign.center, style: TextStyle(color: textGray, fontSize: 12)),
+              const SizedBox(height: 14),
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(hasDoc ? Icons.check_circle : Icons.error_outline, color: hasDoc ? Colors.green : Colors.orange, size: 18),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(hasDoc ? 'Dokumen STR sudah diunggah' : 'Dokumen STR belum diunggah',
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ]),
+              TextButton.icon(
+                onPressed: _busy ? null : _upload,
+                icon: const Icon(Icons.upload_file),
+                label: Text(_busy ? 'Mengunggah...' : (hasDoc ? 'Ganti dokumen STR' : 'Unggah dokumen STR')),
+              ),
+              if (ref.watch(showDemoProvider))
+                const Text('Demo: keluar lalu masuk sebagai Admin untuk memverifikasi akun ini.',
+                    textAlign: TextAlign.center, style: TextStyle(color: textGray, fontSize: 12)),
               const SizedBox(height: 22),
               PrimaryButton('Keluar', onPressed: () => ref.read(sessionProvider.notifier).logout()),
             ]),

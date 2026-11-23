@@ -6,6 +6,7 @@ import '../core/nutrition.dart';
 import '../core/status.dart';
 import '../data/recipes.dart';
 import '../models.dart';
+import '../state/ai.dart';
 import '../state/providers.dart';
 import 'common.dart';
 
@@ -17,9 +18,9 @@ class AssistantReply {
   final String? route;
 }
 
-/// SIMULASI "AI pendamping gizi": pencocokan kata kunci ke jawaban draf yang
-/// memakai data anak (usia, status). Belum memakai model bahasa; jawaban
-/// wajib ditinjau ahli gizi sebelum rilis.
+/// Jawaban berbasis aturan (pencocokan kata kunci + data anak). Dipakai pada mode lokal,
+/// sebagai cadangan bila AI (PRD F6) tidak tersedia, dan untuk tautan cepat di jawaban AI.
+/// Konten draf — wajib ditinjau ahli gizi sebelum rilis.
 AssistantReply answerQuestion(String q, {Child? child, GrowthStatus? status}) {
   final s = q.toLowerCase();
   final m = child?.ageMonths ?? 0;
@@ -107,35 +108,77 @@ class AssistantPage extends ConsumerStatefulWidget {
 
 class _AssistantPageState extends ConsumerState<AssistantPage> {
   final _text = TextEditingController();
+  final _scroll = ScrollController();
   final List<_Msg> _msgs = [];
+  bool _thinking = false;
 
-  void _ask(String q) {
-    if (q.trim().isEmpty) return;
+  /// Pesan terakhir saat AI tidak tersedia (mis. kunci belum diatur / kuota habis).
+  String? _aiNotice;
+
+  Future<void> _ask(String q) async {
+    if (q.trim().isEmpty || _thinking) return;
     final child = ref.read(activeChildProvider);
     final last = child == null ? null : ref.read(childMeasurementsProvider(child.id)).lastOrNull;
     final status = last == null ? null : statusOf(last.result).status;
+    final b = ref.read(backendProvider);
     setState(() {
       _msgs.add(_Msg(true, AssistantReply(q.trim())));
-      _msgs.add(_Msg(false, answerQuestion(q, child: child, status: status)));
+      _thinking = b != null;
     });
     _text.clear();
+    _toBottom();
+    if (b == null) {
+      setState(() => _msgs.add(_Msg(false, answerQuestion(q, child: child, status: status))));
+      _toBottom();
+      return;
+    }
+    // PRD F6: model bahasa lewat Edge Function; cadangan berbasis aturan bila gagal.
+    AssistantReply reply;
+    try {
+      final text = await AiClient(b.client).chat(
+        [for (final m in _msgs) (m.mine, m.reply.text)],
+        child: child,
+        status: status,
+      );
+      final rule = answerQuestion(q, child: child, status: status);
+      // Pertahankan tautan cepat dari aturan (mis. ke grafik/resep/konsultasi) bila relevan.
+      reply = AssistantReply(text, linkLabel: rule.linkLabel, route: rule.route);
+      _aiNotice = null;
+    } on AiUnavailable catch (e) {
+      reply = answerQuestion(q, child: child, status: status);
+      _aiNotice = '${e.message} Sementara memakai jawaban berbasis aturan.';
+    }
+    if (!mounted) return;
+    setState(() {
+      _thinking = false;
+      _msgs.add(_Msg(false, reply));
+    });
+    _toBottom();
   }
+
+  void _toBottom() => WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scroll.hasClients) _scroll.animateTo(_scroll.position.maxScrollExtent, duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      });
 
   @override
   Widget build(BuildContext context) {
     final child = ref.watch(activeChildProvider);
+    final ai = ref.watch(backendProvider) != null;
     const chips = ['Menu MPASI untuk anak saya', 'Sumber protein hewani', 'Anak susah makan', 'Kebutuhan kalori', 'Apa arti status anak saya?'];
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         titleSpacing: 0,
-        title: const Row(children: [
-          CircleAvatar(radius: 20, backgroundColor: Colors.white, child: Icon(Icons.forum_rounded, color: brandBlue)),
-          SizedBox(width: 12),
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Asisten Ahli Gizi', style: TextStyle(fontSize: 18)),
-            Text('AI pendamping gizi anak • simulasi', style: TextStyle(fontSize: 12.5, color: Colors.white70)),
-          ]),
+        title: Row(children: [
+          const CircleAvatar(radius: 20, backgroundColor: Colors.white, child: Icon(Icons.forum_rounded, color: brandBlue)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Asisten Ahli Gizi', style: TextStyle(fontSize: 18), maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(ai ? 'AI pendamping gizi anak' : 'Mode lokal • berbasis aturan',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: Colors.white70)),
+            ]),
+          ),
         ]),
       ),
       body: Column(children: [
@@ -143,14 +186,31 @@ class _AssistantPageState extends ConsumerState<AssistantPage> {
           width: double.infinity,
           color: const Color(0xFFFEF9C3),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          child: const Text('Prototype: jawaban berbasis aturan dan konten draf, bukan model AI, dan tidak menggantikan saran tenaga kesehatan.',
-              style: TextStyle(fontSize: 12, color: Color(0xFF713F12))),
+          child: Text(
+            _aiNotice ??
+                (ai
+                    ? 'Jawaban dibuat AI dan bisa keliru. Tidak menggantikan saran tenaga kesehatan; untuk keluhan sakit, konsultasikan dengan dokter.'
+                    : 'Mode lokal: jawaban berbasis aturan dan konten draf, bukan model AI, dan tidak menggantikan saran tenaga kesehatan.'),
+            style: const TextStyle(fontSize: 12, color: Color(0xFF713F12)),
+          ),
         ),
         Expanded(
-          child: ListView(padding: const EdgeInsets.all(16), children: [
+          child: ListView(controller: _scroll, padding: const EdgeInsets.all(16), children: [
             _bubble(AssistantReply('Halo! Saya asisten gizi GroWell${child == null ? '' : ' untuk ${child.name} (${fmtAge(child.ageDays)})'}. '
                 'Mau tanya apa hari ini?'), false),
             for (final m in _msgs) _bubble(m.reply, m.mine),
+            if (_thinking)
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                    SizedBox(width: 10),
+                    Text('Asisten sedang menulis…', style: TextStyle(color: textGray)),
+                  ]),
+                ),
+              ),
           ]),
         ),
         SizedBox(

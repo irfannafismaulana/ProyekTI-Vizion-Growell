@@ -26,6 +26,17 @@ class SyncErrorNotifier extends Notifier<String?> {
 
 final syncErrorProvider = NotifierProvider<SyncErrorNotifier, String?>(SyncErrorNotifier.new);
 
+// ---------------------------------------------------------------- Push masuk saat aplikasi terbuka (PRD F8)
+typedef PushMessage = ({String title, String body, String? route, DateTime at});
+
+class PushMessageNotifier extends Notifier<PushMessage?> {
+  @override
+  PushMessage? build() => null;
+  void show(String title, String body, String? route) => state = (title: title, body: body, route: route, at: DateTime.now());
+}
+
+final pushMessageProvider = NotifierProvider<PushMessageNotifier, PushMessage?>(PushMessageNotifier.new);
+
 /// Pesan ramah untuk kesalahan dari Supabase.
 String describeBackendError(Object e) {
   if (e is PostgrestException) {
@@ -125,6 +136,7 @@ class SupabaseBackend {
           specialty: r['specialty'] as String?,
           experienceYears: r['experience_years'] as int?,
           workplace: r['workplace'] as String?,
+          strDocumentPath: r['str_document_path'] as String?,
         ),
     ];
   }
@@ -160,6 +172,7 @@ class SupabaseBackend {
         weightKg: w,
         heightCm: h,
         result: assess(sex: child.sex, birthDate: child.birthDate, measuredAt: date, weightKg: w, heightCm: h),
+        photoPath: r['photo_path'] as String?,
       ));
     }
     return (kids, ms);
@@ -176,6 +189,7 @@ class SupabaseBackend {
           meal: Meal.values.byName(r['meal'] as String),
           foodId: r['food_id'] as String,
           grams: _num(r['grams']),
+          photoPath: r['photo_path'] as String?,
         ),
     ];
   }
@@ -301,6 +315,36 @@ class SupabaseBackend {
     return (url: storage.getPublicUrl(path), path: path);
   }
 
+  // ------------------------------------------------------------ Berkas privat (PRD F2, F3)
+  static const strBucket = 'str-documents';
+  static const photoBucket = 'photos';
+
+  /// Unggah dokumen STR ke folder sendiri lalu catat jalurnya di profil.
+  Future<String> uploadStrDocument({required Uint8List bytes, required String mime, required String extension}) async {
+    final path = '$userId/str-${DateTime.now().millisecondsSinceEpoch}.$extension';
+    await client.storage.from(strBucket).uploadBinary(path, bytes, fileOptions: FileOptions(contentType: mime));
+    await client.from('profiles').update({'str_document_path': path}).eq('id', userId!);
+    return path;
+  }
+
+  /// Foto makanan/pertumbuhan: `<orang tua>/<anak>/<food|growth>/<id>.<ext>`.
+  Future<String> uploadPhoto({
+    required String childId,
+    required String kind,
+    required String id,
+    required Uint8List bytes,
+    required String mime,
+  }) async {
+    final ext = mime == 'image/png' ? 'png' : (mime == 'image/webp' ? 'webp' : 'jpg');
+    final path = '$userId/$childId/$kind/$id.$ext';
+    await client.storage.from(photoBucket).uploadBinary(path, bytes, fileOptions: FileOptions(contentType: mime, upsert: true));
+    return path;
+  }
+
+  /// Tautan sementara untuk berkas privat (dicek RLS Storage).
+  Future<String> signedUrl(String bucket, String path, {int seconds = 300}) =>
+      client.storage.from(bucket).createSignedUrl(path, seconds);
+
   Future<void> deleteVideo({required String id, String? storagePath}) async {
     await client.from('edu_videos').delete().eq('id', id);
     if (storagePath != null) await client.storage.from(videoBucket).remove([storagePath]);
@@ -403,13 +447,22 @@ class SupabaseBackend {
         'weight_kg': m.weightKg,
         'height_cm': m.heightCm,
         'source': source,
+        'photo_path': m.photoPath,
       });
 
   Future<void> deleteMeasurement(String id) => client.from('measurements').delete().eq('id', id);
 
   Future<void> insertFood(List<FoodEntry> entries) => client.from('food_entries').insert([
         for (final e in entries)
-          {'id': e.id, 'child_id': e.childId, 'eaten_on': ymd(e.date), 'meal': e.meal.name, 'food_id': e.foodId, 'grams': e.grams},
+          {
+            'id': e.id,
+            'child_id': e.childId,
+            'eaten_on': ymd(e.date),
+            'meal': e.meal.name,
+            'food_id': e.foodId,
+            'grams': e.grams,
+            'photo_path': e.photoPath,
+          },
       ]);
 
   Future<void> deleteFood(String id) => client.from('food_entries').delete().eq('id', id);
@@ -417,10 +470,21 @@ class SupabaseBackend {
   Future<void> insertThread(ConsultThread t) =>
       client.from('consult_threads').insert({'id': t.id, 'parent_id': t.parentId, 'doctor_id': t.doctorId});
 
-  Future<void> insertMessage(String threadId, String text) =>
-      client.from('consult_messages').insert({'thread_id': threadId, 'sender_id': userId, 'body': text});
+  /// Minta server mengirim push ke penerima (PRD F8). Gagal diam-diam: push bersifat tambahan.
+  void _notify(Map<String, dynamic> body) =>
+      unawaited(client.functions.invoke('notify', body: body).then((_) {}, onError: (Object _) {}));
 
-  Future<void> insertNote(ConsultNote n) => client.from('consult_notes').insert({
+  Future<void> insertMessage(String threadId, String text) async {
+    await client.from('consult_messages').insert({'thread_id': threadId, 'sender_id': userId, 'body': text});
+    _notify({'type': 'message', 'thread_id': threadId});
+  }
+
+  Future<void> insertNote(ConsultNote n) async {
+    await _insertNote(n);
+    _notify({'type': 'note', 'id': n.id});
+  }
+
+  Future<void> _insertNote(ConsultNote n) => client.from('consult_notes').insert({
         'id': n.id,
         'thread_id': n.threadId,
         'child_id': n.childId,
@@ -432,14 +496,20 @@ class SupabaseBackend {
         'catatan': n.catatan,
       });
 
-  Future<void> insertAppointment(Appointment a) => client.from('appointments').insert({
-        'id': a.id,
-        'child_id': a.childId,
-        'doctor_id': a.doctorId,
-        'scheduled_at': a.date.toUtc().toIso8601String(),
-      });
+  Future<void> insertAppointment(Appointment a) async {
+    await client.from('appointments').insert({
+      'id': a.id,
+      'child_id': a.childId,
+      'doctor_id': a.doctorId,
+      'scheduled_at': a.date.toUtc().toIso8601String(),
+    });
+    _notify({'type': 'appointment', 'id': a.id});
+  }
 
-  Future<void> verifyHealthWorker(String userId) => client.from('profiles').update({'verified': true}).eq('id', userId);
+  Future<void> verifyHealthWorker(String userId) async {
+    await client.from('profiles').update({'verified': true}).eq('id', userId);
+    _notify({'type': 'verified', 'user_id': userId});
+  }
 
   Future<void> insertScore({required String name, required int points, required int correct, required int total}) =>
       client.from('quiz_scores').insert({'user_id': userId, 'display_name': name, 'points': points, 'correct': correct, 'total': total});

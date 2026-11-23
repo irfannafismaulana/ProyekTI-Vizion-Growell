@@ -44,14 +44,14 @@ void main() {
     final engine = c.read(quizProvider.notifier);
     final me = users.byId('u_rani');
 
-    expect(engine.createRoom(me: me, settings: const QuizSettings(difficulty: Difficulty.mudah, category: QuizCategory.orangTua, questionCount: 5, secondsPerQuestion: 10)), isNull);
+    expect(await engine.createRoom(me: me, settings: const QuizSettings(difficulty: Difficulty.mudah, category: QuizCategory.orangTua, questionCount: 5, secondsPerQuestion: 10)), isNull);
     var s = c.read(quizProvider)!;
     expect(s.code, hasLength(6));
-    expect(engine.start(), isNotNull, reason: 'belum ada pemain lain, minimal 2 pemain');
+    expect(await engine.start(), isNotNull, reason: 'belum ada pemain lain, minimal 2 pemain');
 
     await tester.pump(const Duration(milliseconds: 1300)); // bot pertama bergabung
     expect(c.read(quizProvider)!.players.length, greaterThanOrEqualTo(2));
-    expect(engine.start(), isNull);
+    expect(await engine.start(), isNull);
 
     s = c.read(quizProvider)!;
     expect(s.phase, QuizPhase.question);

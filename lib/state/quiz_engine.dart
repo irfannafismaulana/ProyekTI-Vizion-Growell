@@ -3,11 +3,13 @@ import 'dart:math' as math;
 
 import 'package:clock/clock.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' show RealtimeChannel;
 
 import '../core/quiz_rules.dart';
 import '../data/quiz_bank.dart';
 import '../models.dart';
 import 'providers.dart';
+import 'quiz_live.dart';
 
 /// Kode room demo untuk fitur "Gabung room" pada mode lokal (tanpa server).
 const demoRoomCode = 'GRW24A';
@@ -68,7 +70,11 @@ class QuizSession {
     this.secondsLeft = 0,
     this.message,
     this.myHistory = const [],
+    this.isLive = false,
   });
+
+  /// True = ruang antar-perangkat lewat Supabase; false = lawan bot (mode lokal/latihan).
+  final bool isLive;
 
   final String code;
   final String hostId;
@@ -125,19 +131,36 @@ class QuizSession {
         secondsLeft: secondsLeft ?? this.secondsLeft,
         message: message,
         myHistory: myHistory ?? this.myHistory,
+        isLive: isLive,
       );
 }
 
 QuizCategory profileOf(Role r) => r == Role.teen ? QuizCategory.remaja : QuizCategory.orangTua;
 
-/// Mesin kuis lokal. Pemain lain adalah bot simulasi; pada tahap Supabase,
-/// sumber pemain diganti Realtime Broadcast/Presence tanpa mengubah aturan.
+/// Mesin kuis. Dua mode:
+/// - **live** (tersambung Supabase): ruang antar-perangkat; fase & nilai diatur server
+///   (`quiz_*` RPC), perubahan diterima lewat Realtime + polling cadangan.
+/// - **bot** (mode lokal, atau "Latihan dengan bot"): pemain lain adalah bot simulasi.
 class QuizEngine extends Notifier<QuizSession?> {
   final _rng = math.Random();
   final List<Timer> _timers = [];
   Timer? _ticker;
   DateTime? _questionStart;
   final Map<String, (double, int)> _botPlan = {}; // id -> (detik menjawab, indeks jawaban)
+  bool _practice = false;
+
+  // ---- live
+  LiveQuizApi? _api;
+  String? _roomId;
+  RealtimeChannel? _channel;
+  Timer? _poll;
+  Timer? _reloadDebounce;
+  Duration _serverOffset = Duration.zero; // jam server - jam perangkat
+  DateTime? _phaseStart; // jam server
+  DateTime _lastTickCall = DateTime(2000);
+  int _loadSeq = 0;
+  bool _finishedHandled = false;
+  (int, int)? _pendingChoice; // (indeks soal, pilihan) sebelum dikonfirmasi server
 
   @override
   QuizSession? build() {
@@ -151,6 +174,13 @@ class QuizEngine extends Notifier<QuizSession?> {
     }
     _timers.clear();
     _ticker?.cancel();
+    _ticker = null;
+    _poll?.cancel();
+    _poll = null;
+    _reloadDebounce?.cancel();
+    final ch = _channel;
+    _channel = null;
+    if (ch != null) unawaited(_api?.client.removeChannel(ch));
   }
 
   void _after(Duration d, void Function() f) => _timers.add(Timer(d, f));
@@ -158,14 +188,48 @@ class QuizEngine extends Notifier<QuizSession?> {
   Player _bot(String name, QuizCategory profile) =>
       Player(id: 'bot_${name.toLowerCase()}', name: 'Bot $name', isBot: true, profile: profile);
 
+  LiveQuizApi? get _liveApi {
+    final b = ref.read(backendProvider);
+    return b == null ? null : LiveQuizApi(b.client);
+  }
+
+  /// True bila "Buat Ruang" membuat ruang antar-perangkat (tersambung Supabase).
+  bool get canPlayLive => ref.read(backendProvider) != null;
+
+  String? _checkPlayer(AppUser me) =>
+      me.role == Role.health || me.role == Role.admin ? 'Kuis hanya untuk peran orang tua dan remaja.' : null;
+
   // ------------------------------------------------------------ room
   /// [capacity]: mode 2 pemain (duel) atau 4 pemain (battle).
-  String? createRoom({required AppUser me, required QuizSettings settings, QuizCategory? myProfile, int capacity = 4}) {
+  /// [practice]: paksa lawan bot walau tersambung database (skor tidak masuk papan skor).
+  Future<String?> createRoom({
+    required AppUser me,
+    required QuizSettings settings,
+    QuizCategory? myProfile,
+    int capacity = 4,
+    bool practice = false,
+  }) async {
     final err = settings.validate();
     if (err != null) return err;
     if (capacity != 2 && capacity != 4) return 'Mode permainan harus 2 atau 4 pemain.';
-    if (me.role == Role.health || me.role == Role.admin) return 'Kuis hanya untuk peran orang tua dan remaja.';
-    _cancelAll();
+    final roleErr = _checkPlayer(me);
+    if (roleErr != null) return roleErr;
+    final api = _liveApi;
+    if (api != null && !practice) {
+      return _enterLive(
+        api,
+        () => api.create(
+          capacity: capacity,
+          difficulty: settings.difficulty.name,
+          category: settings.category.name,
+          count: settings.questionCount,
+          seconds: settings.secondsPerQuestion,
+          profile: (myProfile ?? profileOf(me.role)).name,
+        ),
+      );
+    }
+    _resetLocal();
+    _practice = api != null;
     state = QuizSession(
       code: generateRoomCode(_rng),
       hostId: me.id,
@@ -186,14 +250,17 @@ class QuizEngine extends Notifier<QuizSession?> {
     return null;
   }
 
-  String? joinRoom({required AppUser me, required String code, QuizCategory? myProfile}) {
-    if (me.role == Role.health || me.role == Role.admin) return 'Kuis hanya untuk peran orang tua dan remaja.';
+  Future<String?> joinRoom({required AppUser me, required String code, QuizCategory? myProfile}) async {
+    final roleErr = _checkPlayer(me);
+    if (roleErr != null) return roleErr;
     final c = code.trim().toUpperCase();
-    if (c.length != 6) return 'Kode room harus 6 karakter.';
+    if (c.length != 6) return 'Kode ruang harus 6 karakter.';
+    final api = _liveApi;
+    if (api != null) return _enterLive(api, () => api.join(c, (myProfile ?? profileOf(me.role)).name));
     if (c != demoRoomCode) {
-      return 'Room $c tidak ditemukan. Mode lokal hanya menyediakan room demo $demoRoomCode (room antar-perangkat aktif setelah tersambung Supabase).';
+      return 'Ruang $c tidak ditemukan. Mode lokal hanya menyediakan ruang demo $demoRoomCode (ruang antar-perangkat aktif setelah tersambung Supabase).';
     }
-    _cancelAll();
+    _resetLocal();
     final host = _bot('Rina', QuizCategory.remaja);
     state = QuizSession(
       code: c,
@@ -208,13 +275,22 @@ class QuizEngine extends Notifier<QuizSession?> {
     return null;
   }
 
-  void leave() {
+  void _resetLocal() {
     _cancelAll();
+    _api = null;
+    _roomId = null;
+    _practice = false;
+  }
+
+  void leave() {
+    final api = _api, room = _roomId;
+    _resetLocal();
     state = null;
+    if (api != null && room != null) unawaited(api.leave(room).catchError((Object _) {}));
   }
 
   /// Room master memulai kuis; minimal 2 pemain (Gambar E6).
-  String? start() {
+  Future<String?> start() async {
     final s = state;
     if (s == null || s.phase != QuizPhase.lobby) return null;
     if (s.players.length < 2) return 'Minimal 2 pemain untuk memulai kuis.';
@@ -224,9 +300,197 @@ class QuizEngine extends Notifier<QuizSession?> {
       playerProfiles: s.players.map((p) => p.profile).toList(),
       rng: _rng,
     );
+    final api = _api, room = _roomId;
+    if (s.isLive && api != null && room != null) {
+      try {
+        await api.start(room, [for (final q in qs) q.id]);
+        _reload();
+        return null;
+      } catch (e) {
+        return describeBackendError(e);
+      }
+    }
     state = s.copyWith(questions: qs, index: 0);
     _beginQuestion();
     return null;
+  }
+
+  // ------------------------------------------------------------ live (Supabase)
+  Future<String?> _enterLive(LiveQuizApi api, Future<String> Function() open) async {
+    _resetLocal();
+    state = null;
+    try {
+      final roomId = await open();
+      _api = api;
+      _roomId = roomId;
+      _finishedHandled = false;
+      _pendingChoice = null;
+      await _syncClock();
+      final snap = await api.load(roomId);
+      if (snap == null) return 'Ruang tidak ditemukan.';
+      _apply(snap);
+      _channel = api.watch(roomId, _reload);
+      _poll = Timer.periodic(const Duration(seconds: 2), (_) => _reload());
+      _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) => _liveTick());
+      return null;
+    } catch (e) {
+      _resetLocal();
+      return describeBackendError(e);
+    }
+  }
+
+  DateTime get _serverNow => DateTime.now().add(_serverOffset);
+
+  Future<void> _syncClock() async {
+    final api = _api, room = _roomId;
+    if (api == null || room == null) return;
+    final sent = DateTime.now();
+    final server = await api.tick(room);
+    final rtt = DateTime.now().difference(sent);
+    _serverOffset = server.difference(sent.add(rtt ~/ 2));
+  }
+
+  void _reload() {
+    _reloadDebounce?.cancel();
+    _reloadDebounce = Timer(const Duration(milliseconds: 60), () async {
+      final api = _api, room = _roomId;
+      if (api == null || room == null) return;
+      final seq = ++_loadSeq;
+      try {
+        final snap = await api.load(room);
+        if (seq != _loadSeq || _roomId != room) return;
+        if (snap == null) {
+          _resetLocal();
+          state = null;
+          ref.read(syncErrorProvider.notifier).report('Ruang kuis sudah ditutup host.');
+          return;
+        }
+        _apply(snap);
+      } catch (_) {
+        // Koneksi terputus sesaat: coba lagi pada polling berikutnya.
+      }
+    });
+  }
+
+  static QuizPhase _phaseOf(String s) => switch (s) {
+        'question' => QuizPhase.question,
+        'reveal' => QuizPhase.reveal,
+        'finished' => QuizPhase.finished,
+        _ => QuizPhase.lobby,
+      };
+
+  void _apply(LiveRoomSnapshot snap) {
+    final r = snap.room;
+    final meId = _api!.userId;
+    final phase = _phaseOf(r['status'] as String);
+    final index = r['current_index'] as int;
+    final ids = (r['question_ids'] as List).cast<String>();
+    final byId = {for (final q in quizBank) q.id: q};
+    final settings = QuizSettings(
+      difficulty: Difficulty.values.byName(r['difficulty'] as String),
+      category: QuizCategory.values.byName(r['category'] as String),
+      questionCount: r['question_count'] as int,
+      secondsPerQuestion: r['seconds_per_question'] as int,
+    );
+    _phaseStart = DateTime.parse(r['phase_started_at'] as String);
+    if (_pendingChoice != null && (_pendingChoice!.$1 != index || phase != QuizPhase.question)) _pendingChoice = null;
+
+    int? answerOf(Map<String, dynamic> p) {
+      final isMe = p['user_id'] == meId;
+      if (phase == QuizPhase.question) {
+        if (isMe) return snap.myAnswers[index]?.$1 ?? (_pendingChoice?.$1 == index ? _pendingChoice!.$2 : null);
+        return p['answered_index'] == index ? -1 : null; // sudah menjawab, isi jawaban dirahasiakan
+      }
+      if (phase == QuizPhase.lobby) return null;
+      return p['last_choice'] as int?;
+    }
+
+    final players = [
+      for (final p in snap.players)
+        Player(
+          id: p['user_id'] as String,
+          name: p['display_name'] as String,
+          isBot: false,
+          profile: QuizCategory.values.byName(p['profile'] as String),
+          score: p['score'] as int,
+          correct: p['correct'] as int,
+          lastPoints: p['last_points'] as int,
+          answer: answerOf(p),
+          totalAnswerSeconds: (p['total_answer_ms'] as int) / 1000,
+        ),
+    ];
+    final judged = switch (phase) { QuizPhase.lobby => 0, QuizPhase.question => index, _ => index + 1 };
+    state = QuizSession(
+      code: r['code'] as String,
+      hostId: r['host_id'] as String,
+      meId: meId,
+      settings: settings,
+      capacity: r['capacity'] as int,
+      players: players,
+      questions: [for (final id in ids) ?byId[id]],
+      index: index,
+      phase: phase,
+      secondsLeft: _secondsLeft(phase, settings.secondsPerQuestion),
+      myHistory: [for (var i = 0; i < judged; i++) snap.myAnswers[i]?.$2 ?? false],
+      isLive: true,
+    );
+    if (phase == QuizPhase.finished && !_finishedHandled) {
+      _finishedHandled = true;
+      _finishLive();
+    }
+  }
+
+  double _secondsLeft(QuizPhase phase, int duration) {
+    if (phase != QuizPhase.question || _phaseStart == null) return 0;
+    final elapsed = _serverNow.difference(_phaseStart!).inMilliseconds / 1000;
+    return (duration - elapsed).clamp(0.0, duration.toDouble());
+  }
+
+  /// Hitung mundur lokal; bila waktu soal/pembahasan habis, minta server memajukan fase.
+  void _liveTick() {
+    final s = state, api = _api, room = _roomId;
+    if (s == null || api == null || room == null || _phaseStart == null) return;
+    if (s.phase == QuizPhase.question) {
+      final left = _secondsLeft(s.phase, s.settings.secondsPerQuestion);
+      if ((left - s.secondsLeft).abs() >= 0.1) state = s.copyWith(secondsLeft: left, message: s.message);
+    }
+    final elapsed = _serverNow.difference(_phaseStart!).inMilliseconds / 1000;
+    final due = (s.phase == QuizPhase.question && elapsed >= s.settings.secondsPerQuestion) ||
+        (s.phase == QuizPhase.reveal && elapsed >= 3.6);
+    if (due && DateTime.now().difference(_lastTickCall) > const Duration(milliseconds: 900)) {
+      _lastTickCall = DateTime.now();
+      unawaited(api.tick(room).then((_) => _reload(), onError: (Object _) {}));
+    }
+  }
+
+  void _answerLive(QuizSession s, int option) {
+    final api = _api, room = _roomId;
+    if (api == null || room == null) return;
+    _pendingChoice = (s.index, option);
+    state = s.copyWith(players: [for (final p in s.players) p.id == s.meId ? p.copyWith(answer: option) : p]);
+    unawaited(api.answer(room, s.index, option).then((_) => _reload(), onError: (Object e) {
+      _pendingChoice = null;
+      ref.read(syncErrorProvider.notifier).report(describeBackendError(e));
+      _reload();
+    }));
+  }
+
+  /// Skor semua pemain sudah disimpan server; perbarui papan skor & lencana saya.
+  void _finishLive() {
+    final s = state!;
+    final api = _api;
+    final me = s.me;
+    ref.read(badgesProvider.notifier).recordGame(
+          s.meId,
+          correct: me.correct,
+          total: s.questions.length,
+          avgSeconds: s.questions.isEmpty ? 0 : me.totalAnswerSeconds / s.questions.length,
+        );
+    if (api != null) {
+      unawaited(api.leaderboard().then((lb) => ref.read(leaderboardProvider.notifier).replaceAll(lb), onError: (Object _) {}));
+    }
+    _ticker?.cancel();
+    _poll?.cancel();
   }
 
   void _beginQuestion() {
@@ -271,6 +535,7 @@ class QuizEngine extends Notifier<QuizSession?> {
   void answer(int option) {
     final s = state;
     if (s == null || s.phase != QuizPhase.question || s.me.answer != null) return;
+    if (s.isLive) return _answerLive(s, option);
     final elapsed = clock.now().difference(_questionStart!).inMilliseconds / 1000;
     state = s.copyWith(players: [for (final p in s.players) p.id == s.meId ? p.copyWith(answer: option, answerSeconds: elapsed) : p]);
     _tick();
@@ -315,12 +580,15 @@ class QuizEngine extends Notifier<QuizSession?> {
     final s = state!;
     final lb = ref.read(leaderboardProvider.notifier);
     final me = s.me;
-    for (final p in s.players) {
-      if (p.id == s.meId) {
-        // Skor sendiri disimpan ke database (mode Supabase); pemain lain/bot hanya di layar.
-        lb.recordMine(name: p.name, points: p.score, correct: p.correct, total: s.questions.length);
-      } else {
-        lb.addPoints(p.name, p.score);
+    // Latihan dengan bot saat tersambung database tidak masuk papan skor:
+    // skor resmi hanya dari ruang live yang dinilai server.
+    if (!_practice) {
+      for (final p in s.players) {
+        if (p.id == s.meId) {
+          lb.recordMine(name: p.name, points: p.score, correct: p.correct, total: s.questions.length);
+        } else {
+          lb.addPoints(p.name, p.score);
+        }
       }
     }
     ref.read(badgesProvider.notifier).recordGame(

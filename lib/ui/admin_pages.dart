@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../models.dart';
+import '../state/backend.dart' show SupabaseBackend;
 import '../state/providers.dart';
 import 'common.dart';
 
@@ -26,7 +28,19 @@ class AdminPage extends ConsumerWidget {
             child: ListTile(
               leading: const Icon(Icons.hourglass_top, color: Colors.orange),
               title: Text(u.name),
-              subtitle: Text('${u.title ?? 'Tenaga kesehatan'} • STR ${u.strNumber}\nDokumen: dokumen_STR.pdf (simulasi)'),
+              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${u.title ?? 'Tenaga kesehatan'} • STR ${u.strNumber}'),
+                if (u.strDocumentPath == null)
+                  const Text('Dokumen STR belum diunggah', style: TextStyle(color: Colors.orange))
+                else
+                  InkWell(
+                    onTap: () => _openStr(context, ref, u),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Text('Lihat dokumen STR', style: TextStyle(color: brandBlue, fontWeight: FontWeight.w700, decoration: TextDecoration.underline)),
+                    ),
+                  ),
+              ]),
               isThreeLine: true,
               trailing: FilledButton(
                 onPressed: () {
@@ -51,8 +65,24 @@ class AdminPage extends ConsumerWidget {
             ),
           ),
         const SizedBox(height: 8),
-        const Text('Prototype: Pemeriksaan keaslian STR dilakukan manual oleh Admin.', style: TextStyle(fontSize: 11, color: Colors.black54)),
+        const Text('Pemeriksaan keaslian STR dilakukan manual oleh Admin (cocokkan nomor STR dengan dokumen).',
+            style: TextStyle(fontSize: 11, color: Colors.black54)),
       ]),
     );
+  }
+
+  /// Buka dokumen STR lewat tautan sementara 5 menit (bucket privat, hanya admin & pemilik).
+  Future<void> _openStr(BuildContext context, WidgetRef ref, AppUser u) async {
+    final b = ref.read(backendProvider);
+    if (b == null) {
+      showInfo(context, 'Mode lokal: ${u.strDocumentPath!.split('/').last} (berkas tidak disimpan).');
+      return;
+    }
+    try {
+      final url = await b.signedUrl(SupabaseBackend.strBucket, u.strDocumentPath!);
+      await launchUrl(Uri.parse(url), webOnlyWindowName: '_blank');
+    } catch (e) {
+      if (context.mounted) showError(context, ArgumentError(describeBackendError(e)));
+    }
   }
 }

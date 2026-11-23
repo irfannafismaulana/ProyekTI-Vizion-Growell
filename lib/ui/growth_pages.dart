@@ -7,10 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../config.dart';
 import '../core/status.dart';
 import '../core/zscore.dart';
 import '../models.dart';
 import '../state/providers.dart';
+import '../util/files.dart';
 import 'common.dart';
 
 // ---------------------------------------------------------------- Ringkasan di Beranda
@@ -241,11 +243,15 @@ class _ChildPhotoFlowState extends ConsumerState<_ChildPhotoFlow> {
   final _h = TextEditingController();
   final _w = TextEditingController();
 
+  String _mime = 'image/jpeg';
+  bool _saving = false;
+
   Future<void> _pick(ImageSource source) async {
     try {
-      final x = await ImagePicker().pickImage(source: source, maxWidth: 1280);
+      final x = await ImagePicker().pickImage(source: source, maxWidth: 1024, maxHeight: 1024, imageQuality: 80);
       if (x == null) return;
       _photo = await x.readAsBytes();
+      _mime = x.mimeType ?? mimeOfImage(x.name) ?? 'image/jpeg';
       _analyze();
     } catch (e) {
       if (mounted) showError(context, ArgumentError('Kamera/galeri tidak dapat dibuka di perangkat ini.'));
@@ -263,11 +269,26 @@ class _ChildPhotoFlowState extends ConsumerState<_ChildPhotoFlow> {
     setState(() => _step = _PhotoStep.result);
   }
 
-  void _save() {
+  Future<void> _save() async {
     final h = parseNum(_h.text), w = parseNum(_w.text);
     if (h == null || w == null) return showError(context, ArgumentError('Isi tinggi dan berat badan dengan angka, contoh 62,5.'));
+    if (_saving) return;
+    setState(() => _saving = true);
     try {
-      final m = ref.read(measurementsProvider.notifier).add(child: widget.child, date: DateTime.now(), weightKg: w, heightCm: h, source: 'foto_simulasi');
+      // PRD F3: foto anak disimpan sebagai catatan (bucket privat).
+      String? path;
+      final photo = _photo;
+      if (photo != null) {
+        try {
+          path = await ref.read(foodLogProvider.notifier).uploadPhoto(childId: widget.child.id, kind: 'growth', bytes: photo, mime: _mime);
+        } catch (_) {
+          path = null; // pengukuran tetap disimpan walau foto gagal diunggah
+        }
+      }
+      if (!mounted) return;
+      final m = ref
+          .read(measurementsProvider.notifier)
+          .add(child: widget.child, date: DateTime.now(), weightKg: w, heightCm: h, source: 'foto_simulasi', photoPath: path);
       Navigator.pop(context);
       final s = statusOf(m.result).status;
       showInfo(context, 'Data ${widget.child.name} tersimpan. Status: ${s.label}.');
@@ -275,6 +296,8 @@ class _ChildPhotoFlowState extends ConsumerState<_ChildPhotoFlow> {
       showError(context, ArgumentError('Umur anak di luar cakupan pemantauan 0–24 bulan.'));
     } catch (e) {
       showError(context, e);
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -328,7 +351,7 @@ class _ChildPhotoFlowState extends ConsumerState<_ChildPhotoFlow> {
           Expanded(child: SecondaryButton('Pilih Galeri', icon: Icons.upload_outlined, onPressed: () => _pick(ImageSource.gallery))),
         ]),
         const SizedBox(height: 6),
-        TextButton(onPressed: _analyze, child: const Text('Coba tanpa foto (demo)')),
+        if (ref.watch(showDemoProvider)) TextButton(onPressed: _analyze, child: const Text('Coba tanpa foto (demo)')),
       ]);
 
   Widget _result() {
@@ -378,14 +401,15 @@ class _ChildPhotoFlowState extends ConsumerState<_ChildPhotoFlow> {
       metric('Berat Badan', _w, 'kg', Icons.balance, const Color(0xFF16A34A), const Color(0xFFEFFBF2), const Color(0xFFDCFCE7)),
       const SizedBox(height: 4),
       const NoteBox(
-        'Hasil ini adalah estimasi AI. Untuk hasil yang lebih akurat, lakukan pengukuran manual atau konsultasi dengan dokter. '
-        'Prototype: belum memakai model AI — angka diproyeksikan dari tren pengukuran sebelumnya; ketuk angka untuk mengoreksi.',
+        'Angka ini BUKAN hasil ukur: tinggi/berat tidak dapat diukur akurat dari foto biasa, jadi angka diproyeksikan dari '
+        'tren pengukuran sebelumnya. Ketuk angka dan ganti dengan hasil timbang/ukur posyandu sebelum menyimpan. '
+        'Foto disimpan sebagai catatan.',
       ),
       const SizedBox(height: 20),
       Row(children: [
         Expanded(child: SecondaryButton('Batal', onPressed: () => Navigator.pop(context))),
         const SizedBox(width: 12),
-        Expanded(child: PrimaryButton('Simpan Data', onPressed: _save)),
+        Expanded(child: PrimaryButton(_saving ? 'Menyimpan…' : 'Simpan Data', onPressed: _saving ? null : _save)),
       ]),
     ]);
   }
